@@ -1,87 +1,52 @@
-UniLibrary Pro Backend Readiness
-Planned persistence layer
-Frontend state models already map 1:1 to future persistence entities:
+# UniLibrary Pro
 
-User
-LibraryBranch
-ReadingRoom
-Seat
-BibliographicRecord
-BookCopy
-DigitalResource
-Loan
-Reservation
-Fine
-ReadingRoomBooking
-AcquisitionRequest
-Vendor
-Notification
-AuditLog
-These entities are currently represented in strict TypeScript at src/types/index.ts and used centrally by the Zustand store in src/features/store/useAppStore.ts.
+University electronic library management platform built with Next.js 14, TypeScript, Tailwind CSS, Zustand, Zod, React Hook Form, TanStack Table, and Recharts.
 
-Prisma model direction
-Recommended future Prisma modules:
+## Live deployment
 
-auth.prisma: User, Session, RefreshToken, RoleAssignment
-catalog.prisma: BibliographicRecord, BookCopy, AuthorityRecord, ClassificationMap
-circulation.prisma: Loan, Reservation, Fine, AuditLog
-repository.prisma: DigitalResource, ResourceVersion, AccessPolicy
-reading-room.prisma: ReadingRoom, Seat, ReadingRoomBooking
-acquisition.prisma: Vendor, AcquisitionRequest, PurchaseOrder, BudgetLedger
-Suggested relation highlights:
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/bex040598/unilibrary-pro)
 
-BibliographicRecord 1..n BookCopy
-BibliographicRecord 0..n DigitalResource
-User 1..n Loan
-User 1..n Reservation
-Loan 0..n Fine
-ReadingRoom 1..n Seat
-Seat 1..n ReadingRoomBooking
-Vendor 1..n AcquisitionRequest
-REST API mapping
-Suggested resource endpoints:
+After approving the Render Blueprint, the app is expected to be available at:
 
-POST /api/auth/login
-POST /api/auth/register
-POST /api/auth/logout
-GET /api/catalog
-GET /api/catalog/:id
-POST /api/catalog
-PATCH /api/catalog/:id
-POST /api/catalog/:id/copies
-GET /api/repository
-GET /api/repository/:id
-POST /api/repository
-POST /api/circulation/issue
-POST /api/circulation/return
-POST /api/circulation/renew
-POST /api/reservations
-PATCH /api/reservations/:id/approve
-GET /api/fines
-POST /api/fines/:id/pay
-PATCH /api/fines/:id/confirm
-POST /api/reading-room/bookings
-PATCH /api/reading-room/bookings/:id/check-in
-GET /api/acquisition/requests
-POST /api/acquisition/requests
-PATCH /api/acquisition/requests/:id/status
-GET /api/vendors
-POST /api/vendors
-GET /api/admin/reports/:kind
-JWT-ready auth notes
-Current mock auth stores currentUserId in localStorage-backed state.
-Future auth can replace this with:
-short-lived access token
-refresh token rotation
-role claims
-branch/faculty scope claims
-Route protection logic is already centralized in the UI router and permission mapping.
-OAI-PMH and metadata readiness
-BibliographicRecord contains MARC-like fields and Dublin Core fields.
-DigitalResource already stores repository-friendly identifiers (handle, doi, accessLevel, version metadata).
-Future OAI-PMH responses can expose:
-oai_dc
-marcxml
-internal JSON record schema
-Current limitation
-This document describes the backend cut-over path. The current implementation remains a frontend-first demo powered by localStorage and mock workflows.
+- `https://unilibrary-pro-bex040598.onrender.com/`
+- `https://unilibrary-pro-bex040598.onrender.com/login`
+
+## Demo accounts
+
+- Student: `student@unilibrary.uz` / `password123`
+- Teacher: `teacher@unilibrary.uz` / `password123`
+- Librarian: `librarian@unilibrary.uz` / `password123`
+- Cataloger: `cataloger@unilibrary.uz` / `password123`
+- Acquisition Manager: `acquisition@unilibrary.uz` / `password123`
+- Repository Manager: `repository@unilibrary.uz` / `password123`
+- Admin: `admin@unilibrary.uz` / `password123`
+- Super Admin: `superadmin@unilibrary.uz` / `password123`
+
+## Stack
+
+- Next.js 14 App Router
+- TypeScript strict mode
+- Tailwind CSS
+- Zustand state store
+- localStorage persistence
+- React Hook Form + Zod validation
+- Recharts analytics
+- TanStack Table
+- Lucide React icons
+
+## Modules
+
+- Public landing page
+- OPAC electronic catalog
+- Bibliographic record detail page
+- Student and teacher cabinets
+- Librarian circulation desk
+- Cataloger metadata workspace
+- Acquisition management
+- Digital repository
+- Reading room booking
+- Admin analytics and reports
+
+## Backend readiness
+
+See [docs/backend-readiness.md](docs/backend-readiness.md).
