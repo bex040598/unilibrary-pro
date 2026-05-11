@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: unilibrary-pro-bex040598
+    name: unilibrary-platformasi-bex040598
     repo: https://github.com/bex040598/unilibrary-pro
     branch: main
     env: node
