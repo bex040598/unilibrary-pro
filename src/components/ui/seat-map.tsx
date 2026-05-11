@@ -32,6 +32,7 @@ export function SeatMap({
           <Button
             key={seat.id}
             variant="secondary"
+            aria-label={`Seat ${seat.seatNumber} status ${seat.status}`}
             className={cn(
               "h-12 rounded-2xl px-0",
               seat.status === "available" && "border border-emerald-200 bg-emerald-50 text-emerald-700",

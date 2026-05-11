@@ -56,6 +56,16 @@ import {
 import { DataTable } from "@/components/ui/data-table";
 import { PdfPreviewMock } from "@/components/ui/pdf-preview";
 import {
+  AIAssistantPanel,
+} from "@/components/ai/AIAssistantPanel";
+import { AIRecommendationCard } from "@/components/ai/AIRecommendationCard";
+import { AISummaryBox } from "@/components/ai/AISummaryBox";
+import { CitationAssistant } from "@/components/ai/CitationAssistant";
+import { FlashcardDeck } from "@/components/ai/FlashcardDeck";
+import { QuizGenerator } from "@/components/ai/QuizGenerator";
+import { ReadingPlanGenerator } from "@/components/ai/ReadingPlanGenerator";
+import { ResearchExplorer } from "@/components/ai/ResearchExplorer";
+import {
   Badge,
   Button,
   Card,
@@ -72,9 +82,13 @@ import {
 import { ScannerMock } from "@/components/ui/scanner-mock";
 import { SeatMap } from "@/components/ui/seat-map";
 import { useToast } from "@/components/ui/toast";
+import { buildSummaryFromRecord, buildStudentInsights } from "@/lib/ai/aiService";
+import { buildDublinCoreXml, buildMarcExport, buildStyledCitation, getMissingMetadata } from "@/lib/ai/citationAssistant";
+import { buildStudentRecommendations } from "@/lib/ai/recommendationEngine";
+import { semanticSearchRecords } from "@/lib/ai/semanticSearch";
 import { buildCitation } from "@/lib/citation";
 import { t } from "@/lib/i18n";
-import { dashboardByRole, routeRole } from "@/lib/permissions";
+import { dashboardByRole, hasPermission, permissionMatrix, routeRole } from "@/lib/permissions";
 import { buildReport } from "@/lib/reportGenerator";
 import { downloadTextFile, formatCurrency, formatDate, safeContains } from "@/lib/utils";
 import { demoAccounts } from "@/data/seed";
@@ -106,7 +120,7 @@ const publicMenu = [
 
 const roleMenu: Record<
   "student" | "teacher" | "librarian" | "cataloger" | "acquisitionManager" | "repositoryManager" | "admin",
-  { href: string; label: string; icon: typeof LayoutDashboard }[]
+  { href: string; label: string; icon: typeof LayoutDashboard; permission?: string }[]
 > = {
   student: [
     { href: "/student/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -115,6 +129,11 @@ const roleMenu: Record<
     { href: "/student/fines", label: "Fines", icon: CircleDollarSign },
     { href: "/student/reading-room", label: "Reading room", icon: MapPinned },
     { href: "/student/recommendations", label: "Recommendations", icon: Sparkles },
+    { href: "/student/ai-assistant", label: "AI assistant", icon: Sparkles, permission: "use_ai_tools" },
+    { href: "/student/ai-quiz", label: "AI quiz", icon: GraduationCap, permission: "use_ai_tools" },
+    { href: "/student/flashcards", label: "Flashcards", icon: BookMarked, permission: "use_ai_tools" },
+    { href: "/student/bibliography", label: "Bibliography", icon: FileText, permission: "manage_bibliography" },
+    { href: "/student/research-explorer", label: "Research explorer", icon: Search, permission: "use_ai_tools" },
     { href: "/student/profile", label: "Profile", icon: IdCard }
   ],
   teacher: [
@@ -222,8 +241,10 @@ const resourceSchema = z.object({
   doi: z.string().optional(),
   accessLevel: z.enum(["public", "university only", "faculty only", "staff only", "restricted"]),
   fileUrl: z.string().min(2),
-  fileName: z.string().min(2),
-  fileSize: z.coerce.number().min(1),
+  fileName: z.string().min(2).refine((value) => /\.(pdf|docx|pptx|mp4|mp3)$/i.test(value), {
+    message: "File type must be PDF, DOCX, PPTX, MP4 or MP3."
+  }),
+  fileSize: z.coerce.number().min(1).max(20_000_000, "File size must be under 20 MB."),
   license: z.string().min(2),
   embargoDate: z.string().optional(),
   version: z.string().min(1)
@@ -256,16 +277,22 @@ const recordSchema = z.object({
   department: z.string().min(2),
   leader: z.string().min(2),
   control001: z.string().min(2),
+  marc008: z.string().min(2),
+  marc040: z.string().min(2),
   marc020: z.string().min(2),
   marc041: z.string().min(2),
   marc100: z.string().min(2),
   marc245: z.string().min(2),
   marc260: z.string().min(2),
+  marc082: z.string().min(2),
+  marc084: z.string().min(2),
+  marc490: z.string().min(2),
   marc300: z.string().min(2),
   marc500: z.string().min(2),
   marc504: z.string().min(2),
   marc650: z.string().min(2),
   marc700: z.string().min(2),
+  marc710: z.string().min(2),
   marc852: z.string().min(2),
   marc856: z.string().min(2),
   dcTitle: z.string().min(2),
@@ -295,6 +322,15 @@ function statusTone(status: string) {
     return "rose" as const;
   }
   return "slate" as const;
+}
+
+function metadataCompleteness(record: BibliographicRecord) {
+  const missing = getMissingMetadata(record).length;
+  const score = Math.max(40, 100 - missing * 12);
+  return {
+    score,
+    tone: score > 85 ? ("emerald" as const) : score > 65 ? ("gold" as const) : ("orange" as const)
+  };
 }
 
 function availabilityForRecord(state: AppStore, recordId: string) {
@@ -464,6 +500,7 @@ function ProtectedShell({
         : currentUser.role === "repositoryManager"
           ? roleMenu.repositoryManager
           : roleMenu[currentUser.role as keyof typeof roleMenu];
+  const filteredMenu = menu.filter((item) => !item.permission || hasPermission(currentUser.role, item.permission));
   const pathname = usePathname();
   const { logout, notifications, markNotificationRead } = useAppStore();
   const userNotifications = notifications.filter((item) => item.userId === currentUser.id).slice(0, 5);
@@ -484,7 +521,7 @@ function ProtectedShell({
             </div>
           </div>
           <nav className="space-y-2 px-4 py-5">
-            {menu.map((item) => {
+            {filteredMenu.map((item) => {
               const Icon = item.icon;
               const active = pathname === item.href;
               return (
@@ -514,7 +551,7 @@ function ProtectedShell({
                 <div className="relative">
                   <details className="group">
                     <summary className="list-none">
-                      <Button variant="secondary">
+                      <Button variant="secondary" aria-label="Bildirishnomalarni ochish">
                         <Bell className="h-4 w-4" />
                         {userNotifications.length}
                       </Button>
@@ -735,7 +772,7 @@ function CatalogPage({
   initialMode?: "catalog" | "new-arrivals" | "popular";
   recordId?: string;
 }) {
-  const { reserveBook } = state;
+  const { reserveBook, logAIUsage, trackEntityView } = state;
   const router = useRouter();
   const { push } = useToast();
   const [query, setQuery] = useState("");
@@ -749,10 +786,18 @@ function CatalogPage({
     initialMode === "new-arrivals" ? "newest" : initialMode === "popular" ? "most-borrowed" : "relevance"
   );
   const [citationRecord, setCitationRecord] = useState<BibliographicRecord | null>(null);
+  const [lastSemanticLog, setLastSemanticLog] = useState("");
+  const currentViewerId = state.currentUserId;
 
   const filtered = useMemo(() => {
     const base = state.records.filter((record) => record.status === "published");
-    return base
+    const semanticBase = deferredQuery
+      ? semanticSearchRecords(base, deferredQuery, {
+          faculty: state.users.find((item) => item.id === state.currentUserId)?.faculty,
+          department: state.users.find((item) => item.id === state.currentUserId)?.department
+        })
+      : base;
+    return semanticBase
       .filter((record) => {
         const { available } = availabilityForRecord(state, record.id);
         const searchSpace = [
@@ -768,7 +813,7 @@ function CatalogPage({
           ...state.copies.filter((copy) => copy.recordId === record.id).map((copy) => copy.inventoryNumber)
         ].join(" ");
 
-        const matchesQuery = deferredQuery ? safeContains(searchSpace, deferredQuery) : true;
+        const matchesQuery = deferredQuery ? safeContains(searchSpace, deferredQuery) || semanticBase.some((item) => item.id === record.id) : true;
         const matchesType = resourceType === "all" ? true : record.resourceType === resourceType;
         const matchesFaculty = faculty === "all" ? true : record.faculty === faculty;
         const matchesLanguage = lang === "all" ? true : record.language === lang;
@@ -801,12 +846,46 @@ function CatalogPage({
 
   const selectedRecord = recordId ? state.records.find((item) => item.id === recordId) ?? null : null;
 
+  useEffect(() => {
+    if (deferredQuery.trim().length < 3 || currentViewerId === null || deferredQuery === lastSemanticLog) {
+      return;
+    }
+    logAIUsage({
+      userId: currentViewerId,
+      feature: "semantic_search",
+      input: deferredQuery,
+      outputSummary: `${filtered.length} result`,
+      sourceIds: filtered.slice(0, 5).map((record) => record.id)
+    });
+    setLastSemanticLog(deferredQuery);
+  }, [currentViewerId, deferredQuery, filtered, lastSemanticLog, logAIUsage]);
+
+  useEffect(() => {
+    if (!selectedRecord || !currentViewerId) {
+      return;
+    }
+    trackEntityView({
+      actorId: currentViewerId,
+      entity: "record",
+      entityId: selectedRecord.id,
+      details: selectedRecord.title
+    });
+  }, [currentViewerId, selectedRecord, trackEntityView]);
+
   if (selectedRecord) {
     const resource = resourceForRecord(state, selectedRecord.id);
     const copies = state.copies.filter((item) => item.recordId === selectedRecord.id);
     const similar = state.records
       .filter((item) => item.id !== selectedRecord.id && item.faculty === selectedRecord.faculty)
       .slice(0, 4);
+    const summary = buildSummaryFromRecord({
+      title: selectedRecord.title,
+      annotation: selectedRecord.annotation,
+      keywords: selectedRecord.keywords,
+      subjects: selectedRecord.subjects,
+      resourceType: selectedRecord.resourceType
+    });
+    const completeness = metadataCompleteness(selectedRecord);
 
     const columns: ColumnDef<BookCopyModel>[] = [
       { header: "Inventory", cell: ({ row }) => row.original.inventoryNumber },
@@ -846,12 +925,26 @@ function CatalogPage({
               <Button variant="secondary" onClick={() => setCitationRecord(selectedRecord)}>
                 {t(language, "citation")}
               </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  const result = state.addBibliographyItem({
+                    recordId: selectedRecord.id,
+                    style: "APA 7",
+                    citationText: buildStyledCitation(selectedRecord, "APA 7")
+                  });
+                  push({ tone: result.success ? "success" : "error", title: result.message });
+                }}
+              >
+                Bibliografiyaga qo‘shish
+              </Button>
             </>
           }
         />
         <div className="grid gap-6 xl:grid-cols-[320px_1fr]">
           <Card className="space-y-5">
             <BookCover record={selectedRecord} />
+            <Badge tone={completeness.tone}>Metadata completeness {completeness.score}%</Badge>
             <div className="space-y-3 text-sm text-slate-700">
               <p><span className="font-semibold">ISBN:</span> {selectedRecord.isbn}</p>
               <p><span className="font-semibold">ISSN:</span> {selectedRecord.issn}</p>
@@ -879,6 +972,14 @@ function CatalogPage({
                 </div>
               </div>
             </Card>
+            <AISummaryBox
+              title={selectedRecord.title}
+              summary={summary.summary}
+              concepts={summary.concepts}
+              keyQuestions={summary.keyQuestions}
+              examTheses={summary.examTheses}
+              discussionQuestions={summary.discussionQuestions}
+            />
             <DataTable data={copies} columns={columns} />
             {resource ? <PdfPreviewMock title={resource.title} watermark="University access" /> : null}
             <Card>
@@ -892,6 +993,7 @@ function CatalogPage({
                 ))}
               </div>
             </Card>
+            <AIAssistantPanel promptSeed={selectedRecord.title} title="Shu kitob bo'yicha AI yordam" />
           </div>
         </div>
         <Modal
@@ -1015,6 +1117,7 @@ function CatalogPage({
                           {availabilityData.available > 0 ? "available" : "unavailable"}
                         </Badge>
                         <Badge tone="cyan">{record.resourceType}</Badge>
+                        <Badge tone={metadataCompleteness(record).tone}>metadata {metadataCompleteness(record).score}%</Badge>
                         {record.isNewArrival ? <Badge tone="gold">new arrival</Badge> : null}
                       </div>
                       <div>
@@ -1076,6 +1179,7 @@ function CatalogPage({
                 ))}
             </div>
           </Card>
+          <AIAssistantPanel promptSeed={deferredQuery || "OPAC katalogi"} />
           <Card className="bg-slate-950 text-white">
             <p className="text-sm font-semibold">Digital shelf</p>
             <div className="mt-4 grid grid-cols-4 gap-3">
@@ -1118,15 +1222,36 @@ function RepositoryPage({
 }) {
   const router = useRouter();
   const { push } = useToast();
+  const { trackEntityView } = state;
   const [citation, setCitation] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [facultyFilter, setFacultyFilter] = useState("all");
   const [accessFilter, setAccessFilter] = useState("all");
+  const currentViewerId = state.currentUserId;
 
   const resource = resourceId ? state.digitalResources.find((item) => item.id === resourceId) ?? null : null;
+  useEffect(() => {
+    if (!resource || !currentViewerId) {
+      return;
+    }
+    trackEntityView({
+      actorId: currentViewerId,
+      entity: "resource",
+      entityId: resource.id,
+      details: resource.title
+    });
+  }, [currentViewerId, resource, trackEntityView]);
+
   if (resource) {
     const linkedRecord = resource.recordId ? state.records.find((item) => item.id === resource.recordId) : null;
+    const summary = buildSummaryFromRecord({
+      title: resource.title,
+      annotation: resource.abstract,
+      keywords: resource.keywords,
+      subjects: linkedRecord?.subjects ?? [resource.faculty, resource.department],
+      resourceType: resource.type
+    });
     return (
       <div className="space-y-6">
         <SectionTitle
@@ -1159,7 +1284,17 @@ function RepositoryPage({
           }
         />
         <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
-          <PdfPreviewMock title={resource.title} watermark={resource.accessLevel} />
+          <div className="space-y-6">
+            <PdfPreviewMock title={resource.title} watermark={resource.accessLevel} />
+            <AISummaryBox
+              title={resource.title}
+              summary={summary.summary}
+              concepts={summary.concepts}
+              keyQuestions={summary.keyQuestions}
+              examTheses={summary.examTheses}
+              discussionQuestions={summary.discussionQuestions}
+            />
+          </div>
           <div className="space-y-4">
             <Card>
               <p className="text-sm font-semibold text-ink">Repository metadata</p>
@@ -1178,6 +1313,7 @@ function RepositoryPage({
               <p className="text-sm font-semibold text-ink">Abstract</p>
               <p className="mt-3 text-sm text-slate-600">{resource.abstract}</p>
             </Card>
+            <AIAssistantPanel promptSeed={resource.title} title="Elektron resurs bo'yicha AI yordam" />
           </div>
         </div>
         <Modal
@@ -1270,6 +1406,7 @@ function RepositoryPage({
           </Card>
         ))}
       </div>
+      <AIAssistantPanel promptSeed={query || "repository"} title="Repository AI yordamchisi" />
     </div>
   );
 }
@@ -1454,8 +1591,10 @@ function StudentAndTeacherArea({
 }) {
   const router = useRouter();
   const { push } = useToast();
+  const { logAIUsage } = state;
   const readingList = useReadingList(currentUser.id);
   const [methodByFine, setMethodByFine] = useState<Record<string, string>>({});
+  const [lastAiPageLog, setLastAiPageLog] = useState("");
 
   const loans = state.loans.filter((item) => item.userId === currentUser.id && item.status !== "returned");
   const reservations = state.reservations.filter((item) => item.userId === currentUser.id);
@@ -1465,6 +1604,64 @@ function StudentAndTeacherArea({
   const recommendations = state.records
     .filter((item) => item.faculty === currentUser.faculty && item.status === "published")
     .slice(0, 8);
+  const aiRecommendations = useMemo(
+    () => (currentUser.role === "student" ? buildStudentRecommendations(state, currentUser) : []),
+    [currentUser, state]
+  );
+  const learningInsights = currentUser.role === "student" ? buildStudentInsights(state, currentUser) : null;
+  const readingPlans = state.readingPlans.filter((item) => item.userId === currentUser.id);
+  const quizzes = state.quizzes.filter((item) => item.userId === currentUser.id);
+  const flashcards = state.flashcards.filter((item) => item.userId === currentUser.id);
+  const activityPoints =
+    loans.length * 5 +
+    reservations.length * 3 +
+    readingPlans.filter((plan) => plan.status === "completed").length * 12 +
+    quizzes.filter((quiz) => typeof quiz.score === "number").reduce((sum, quiz) => sum + (quiz.score ?? 0), 0) +
+    flashcards.filter((card) => card.status === "learned").length * 2;
+  const badges = [
+    activityPoints > 40 ? "Faol kitobxon" : null,
+    readingPlans.length > 0 ? "Imtihon tayyorgarligi" : null,
+    state.digitalResources.some((resource) => resource.uploadedBy === currentUser.id) ? "Elektron resurs foydalanuvchisi" : null,
+    quizzes.some((quiz) => (quiz.score ?? 0) >= Math.max(1, quiz.totalQuestions - 1)) ? "Ilmiy izlanuvchi" : null,
+    state.aiUsageLogs.filter((item) => item.userId === currentUser.id).length > 2 ? "Repository Explorer" : null
+  ].filter(Boolean) as string[];
+  const quizProgress = quizzes.map((quiz) => ({
+    name: quiz.topic.split(" ")[0],
+    score: quiz.score ?? 0,
+    total: quiz.totalQuestions
+  }));
+  const subjectDistribution = Array.from(
+    new Set(
+      loans
+        .map((loan) => state.copies.find((copy) => copy.id === loan.copyId))
+        .map((copy) => state.records.find((record) => record.id === copy?.recordId)?.faculty)
+        .filter(Boolean) as string[]
+    )
+  ).map((facultyName) => ({
+    faculty: facultyName.split(" ")[0],
+    value: loans.filter((loan) => {
+      const copy = state.copies.find((item) => item.id === loan.copyId);
+      return state.records.find((record) => record.id === copy?.recordId)?.faculty === facultyName;
+    }).length
+  }));
+
+  useEffect(() => {
+    if (currentUser.role !== "student") {
+      return;
+    }
+    const aiPages = ["recommendations", "ai-assistant", "ai-quiz", "flashcards", "bibliography", "research-explorer"];
+    if (!aiPages.includes(path[1] ?? "") || lastAiPageLog === path[1]) {
+      return;
+    }
+    logAIUsage({
+      userId: currentUser.id,
+      feature: path[1] === "recommendations" ? "recommendation_page" : path[1] ?? "student_ai",
+      input: currentUser.faculty,
+      outputSummary: `Opened ${path[1]}`,
+      sourceIds: aiRecommendations.slice(0, 5).map((item) => item.recordId).filter(Boolean) as string[]
+    });
+    setLastAiPageLog(path[1] ?? "");
+  }, [aiRecommendations, currentUser, lastAiPageLog, logAIUsage, path]);
 
   if (currentUser.role === "teacher") {
     if (path[1] === "reading-lists") {
@@ -1631,29 +1828,51 @@ function StudentAndTeacherArea({
   if (path[1] === "recommendations") {
     return (
       <div className="space-y-6">
-        <SectionTitle title="Recommended books" description="Faculty va subject heading bo‘yicha mos bibliografik yozuvlar." />
+        <SectionTitle title="Shaxsiy tavsiyalar" description="Faculty, reservations, viewed resources va popularity signallari asosidagi tavsiyalar." />
+        <AIAssistantPanel promptSeed={`${currentUser.faculty} uchun tavsiyalar`} title="Tavsiyalar bo'yicha AI yordam" />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {recommendations.map((record) => (
-            <Card key={record.id}>
-              <BookCover record={record} />
-              <p className="mt-4 text-lg font-semibold text-ink">{record.title}</p>
-              <p className="mt-1 text-sm text-slate-500">{record.authors.join(", ")}</p>
-              <div className="mt-4 flex gap-2">
-                <Button variant="secondary" onClick={() => router.push(`/catalog/${record.id}`)}>Open</Button>
-                <Button
-                  onClick={() => {
-                    const result = state.reserveBook(record.id);
-                    push({ tone: result.success ? "success" : "error", title: result.message });
-                  }}
-                >
-                  Reserve
-                </Button>
-              </div>
-            </Card>
+          {aiRecommendations.map((item) => (
+            <AIRecommendationCard
+              key={`${item.category}-${item.recordId}`}
+              title={item.title}
+              reason={item.reason}
+              category={item.category}
+              difficulty={item.difficulty}
+              estimatedReadingTime={item.estimatedReadingTime}
+              availability={item.availability}
+              href={`/catalog/${item.recordId}`}
+              actionLabel="Manbani ochish"
+              secondaryActionLabel="Reserve"
+              onSecondaryAction={() => {
+                if (!item.recordId) return;
+                const result = state.reserveBook(item.recordId);
+                push({ tone: result.success ? "success" : "error", title: result.message });
+              }}
+            />
           ))}
         </div>
       </div>
     );
+  }
+
+  if (path[1] === "ai-assistant") {
+    return <AIAssistantPanel title="AI Kutubxona Yordamchisi" promptSeed={currentUser.faculty} />;
+  }
+
+  if (path[1] === "ai-quiz") {
+    return <QuizGenerator />;
+  }
+
+  if (path[1] === "flashcards") {
+    return <FlashcardDeck />;
+  }
+
+  if (path[1] === "bibliography") {
+    return <CitationAssistant />;
+  }
+
+  if (path[1] === "research-explorer") {
+    return <ResearchExplorer />;
   }
 
   if (path[1] === "profile") {
@@ -1662,12 +1881,14 @@ function StudentAndTeacherArea({
 
   return (
     <div className="space-y-6">
-      <SectionTitle title={currentUser.role === "teacher" ? "Teacher dashboard" : "Student dashboard"} description="Circulation, fines, repository activity va notifications bo‘yicha tezkor ko‘rsatkichlar." />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <SectionTitle title={currentUser.role === "teacher" ? "Teacher dashboard" : "Student dashboard"} description="Circulation, AI reading plans, quiz progress, fines va notifications bo'yicha tezkor ko'rsatkichlar." />
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <KpiCard label="Borrowed books" value={String(loans.length)} hint="Faol loan yozuvlari" accent="cyan" />
         <KpiCard label="Reservations" value={String(reservations.length)} hint="Pending + approved reservations" accent="gold" />
         <KpiCard label="Outstanding fines" value={formatCurrency(fines.filter((item) => item.status !== "paid" && item.status !== "waived").reduce((acc, item) => acc + item.amount, 0))} hint="To‘lov kutayotgan majburiyatlar" accent="rose" />
         <KpiCard label="Reading room bookings" value={String(bookings.length)} hint="Faol QR bookinglar" accent="emerald" />
+        <KpiCard label="Reading plans" value={String(readingPlans.length)} hint="Saqlangan AI o'qish rejalar" accent="cyan" />
+        <KpiCard label="Activity points" value={String(activityPoints)} hint="Gamification va learning activity" accent="gold" />
       </div>
       <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
         <div className="space-y-6">
@@ -1689,6 +1910,60 @@ function StudentAndTeacherArea({
               })}
             </div>
           </Card>
+          {currentUser.role === "student" ? (
+            <Card className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-lg font-semibold text-ink">AI learning analytics</p>
+                <div className="flex flex-wrap gap-2">
+                  {badges.map((badge) => (
+                    <Badge key={badge} tone="cyan">{badge}</Badge>
+                  ))}
+                </div>
+              </div>
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card muted className="h-[260px]">
+                  <p className="mb-3 text-sm font-semibold text-ink">Quiz progress</p>
+                  <p className="sr-only">Quiz progress chart for the current student.</p>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={quizProgress}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="score" fill="#0f9f6e" radius={[8, 8, 0, 0]} />
+                      <Bar dataKey="total" fill="#15b7d6" radius={[8, 8, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Card>
+                <Card muted className="h-[260px]">
+                  <p className="mb-3 text-sm font-semibold text-ink">Borrowed subject distribution</p>
+                  <p className="sr-only">Borrowed subject distribution chart grouped by faculty.</p>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={subjectDistribution} dataKey="value" nameKey="faculty" outerRadius={90}>
+                        {subjectDistribution.map((entry, index) => (
+                          <Cell key={entry.faculty} fill={["#0f9f6e", "#15b7d6", "#c79b2d", "#fb7185", "#2563eb"][index % 5]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </Card>
+              </div>
+              {learningInsights ? (
+                <div className="rounded-2xl border border-slate-200 p-4">
+                  <p className="text-sm font-semibold text-ink">Research interest profile</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {learningInsights.researchProfile.map((item) => (
+                      <Badge key={item} tone="gold">{item}</Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </Card>
+          ) : null}
           <Card>
             <p className="text-lg font-semibold text-ink">Recommended collection</p>
             <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -1700,9 +1975,26 @@ function StudentAndTeacherArea({
               ))}
             </div>
           </Card>
+          {currentUser.role === "student" ? (
+            <Card>
+              <p className="text-lg font-semibold text-ink">Saved reading plans</p>
+              <div className="mt-4 space-y-3">
+                {readingPlans.slice(0, 3).map((plan) => (
+                  <div key={plan.id} className="rounded-2xl border border-slate-200 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-semibold text-ink">{plan.topic}</p>
+                      <Badge tone={plan.status === "completed" ? "emerald" : "cyan"}>{plan.status}</Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{plan.durationDays} kun • {plan.goal}</p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ) : null}
         </div>
         <div className="space-y-6">
           <UserSummaryCard currentUser={currentUser} state={state} />
+          {currentUser.role === "student" ? <AIAssistantPanel promptSeed={currentUser.faculty} title="Kabinet AI yordamchisi" /> : null}
           <Card>
             <p className="text-lg font-semibold text-ink">Notifications</p>
             <div className="mt-4 space-y-3">
@@ -1716,6 +2008,7 @@ function StudentAndTeacherArea({
           </Card>
         </div>
       </div>
+      {currentUser.role === "student" ? <ReadingPlanGenerator /> : null}
     </div>
   );
 }
@@ -2412,9 +2705,9 @@ function CatalogerArea({
       <div className="space-y-6">
         <SectionTitle title="Import / export" description="MARC mock import, MARC export va Dublin Core XML." />
         <Card className="grid gap-4 md:grid-cols-3">
-          <Button onClick={() => setExportModal(JSON.stringify(sample?.marcFields ?? [], null, 2))}>Import MARC mock</Button>
-          <Button onClick={() => setExportModal(JSON.stringify(sample?.marcFields ?? [], null, 2))}>Export MARC mock</Button>
-          <Button onClick={() => setExportModal(`<dc:title>${sample?.title}</dc:title>\n<dc:creator>${sample?.authors[0]}</dc:creator>`)}>Export Dublin Core XML</Button>
+          <Button onClick={() => setExportModal(buildMarcExport(sample!))}>Import MARC mock</Button>
+          <Button onClick={() => setExportModal(buildMarcExport(sample!))}>Export MARC mock</Button>
+          <Button onClick={() => setExportModal(buildDublinCoreXml(sample!))}>Export Dublin Core XML</Button>
         </Card>
         <Modal
           open={Boolean(exportModal)}
@@ -2545,16 +2838,22 @@ function CatalogRecordForm({ currentUser, state }: { currentUser: User; state: A
       department: currentUser.department,
       leader: "00000nam a2200000 i 4500",
       control001: "auto",
+      marc008: "260101s2026    uz ||||| |||| 00| 0 uz d",
+      marc040: "UZ-TUIL |b uz |e rda |c UZ-TUIL",
       marc020: "",
       marc041: "O‘zbek",
       marc100: "",
       marc245: "",
       marc260: "",
+      marc082: "005.1",
+      marc084: "32.97",
+      marc490: "Universitet kursi kutubxonasi",
       marc300: "",
       marc500: "Universitet fondi uchun katalog yozuvi",
       marc504: "Bibliografiya bilan",
       marc650: "",
       marc700: "",
+      marc710: "Universitet axborot-resurs markazi",
       marc852: "Main stack",
       marc856: "No file",
       dcTitle: "",
@@ -2602,16 +2901,22 @@ function CatalogRecordForm({ currentUser, state }: { currentUser: User; state: A
           marcFields: [
             { tag: "LDR", label: "Leader", value: values.leader },
             { tag: "001", label: "Control number", value: values.control001 },
+            { tag: "008", label: "Fixed-length data", value: values.marc008 },
+            { tag: "040", label: "Cataloging source", value: values.marc040 },
             { tag: "020", label: "ISBN", value: values.marc020 || values.isbn },
             { tag: "041", label: "Language", value: values.marc041 },
             { tag: "100", label: "Main author", value: values.marc100 || values.authors },
             { tag: "245", label: "Title", value: values.marc245 || values.title },
             { tag: "260", label: "Publication", value: values.marc260 || values.publisher },
+            { tag: "082", label: "DDC", value: values.marc082 || values.ddc },
+            { tag: "084", label: "BBK", value: values.marc084 || values.bbk },
+            { tag: "490", label: "Series statement", value: values.marc490 },
             { tag: "300", label: "Physical description", value: values.marc300 || `${values.pages} pages` },
             { tag: "500", label: "General note", value: values.marc500 },
             { tag: "504", label: "Bibliography note", value: values.marc504 },
             { tag: "650", label: "Subject heading", value: values.marc650 || values.subjects },
             { tag: "700", label: "Added author", value: values.marc700 || values.editors || "" },
+            { tag: "710", label: "Corporate author", value: values.marc710 },
             { tag: "852", label: "Location", value: values.marc852 },
             { tag: "856", label: "Electronic access", value: values.marc856 }
           ],
@@ -2716,16 +3021,22 @@ function CatalogRecordForm({ currentUser, state }: { currentUser: User; state: A
             {[
               ["leader", "Leader"],
               ["control001", "001 Control number"],
+              ["marc008", "008 Fixed-length data"],
+              ["marc040", "040 Cataloging source"],
               ["marc020", "020 ISBN"],
               ["marc041", "041 Language"],
               ["marc100", "100 Main author"],
               ["marc245", "245 Title"],
               ["marc260", "260 Publication"],
+              ["marc082", "082 DDC"],
+              ["marc084", "084 BBK"],
+              ["marc490", "490 Series statement"],
               ["marc300", "300 Physical description"],
               ["marc500", "500 General note"],
               ["marc504", "504 Bibliography note"],
               ["marc650", "650 Subject heading"],
               ["marc700", "700 Added author"],
+              ["marc710", "710 Corporate author"],
               ["marc852", "852 Location"],
               ["marc856", "856 Electronic access"]
             ].map(([name, label]) => (
@@ -3195,17 +3506,11 @@ function AdminArea({
       <div className="space-y-6">
         <SectionTitle title="Roles and permissions" description="Permission matrix for guest, student, librarian, cataloger and admin roles." />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {[
-            ["Student", "reserve, view own loans, book room"],
-            ["Teacher", "reading lists, upload repository resource, reserve"],
-            ["Librarian", "issue / return / renew / approve reservation / room check-in"],
-            ["Cataloger", "create record, edit metadata, manage copies"],
-            ["Acquisition Manager", "requests, vendors, budget, receiving"],
-            ["Admin / Super Admin", "full module access, reports, audit, system settings"]
-          ].map(([role, perms]) => (
+          {Object.entries(permissionMatrix).map(([role, perms]) => (
             <Card key={role}>
-              <p className="font-semibold text-ink">{role}</p>
-              <p className="mt-2 text-sm text-slate-600">{perms}</p>
+              <p className="font-semibold capitalize text-ink">{role}</p>
+              <p className="mt-2 text-sm text-slate-600">{perms.join(", ")}</p>
+              <p className="mt-3 text-xs text-slate-500">RBAC route protection va menu visibility ushbu matritsaga tayangan.</p>
             </Card>
           ))}
         </div>
@@ -3357,7 +3662,8 @@ function AdminArea({
                         fines: state.fines,
                         records: state.records,
                         bookings: state.bookings,
-                        acquisitionRequests: state.acquisitionRequests
+                        acquisitionRequests: state.acquisitionRequests,
+                        digitalResources: state.digitalResources
                       })
                     )
                   }
@@ -3372,7 +3678,8 @@ function AdminArea({
                       fines: state.fines,
                       records: state.records,
                       bookings: state.bookings,
-                      acquisitionRequests: state.acquisitionRequests
+                      acquisitionRequests: state.acquisitionRequests,
+                      digitalResources: state.digitalResources
                     });
                     downloadTextFile(`${kind}.csv`, content);
                     push({ tone: "success", title: "CSV/text report exported." });
@@ -3465,15 +3772,24 @@ function AdminArea({
     value: state.records.filter((item) => item.faculty === faculty).reduce((acc, item) => acc + item.borrowCount, 0)
   }));
   const topBorrowed = state.records.slice().sort((a, b) => b.borrowCount - a.borrowCount).slice(0, 5);
+  const aiFeatureUsage = Array.from(new Set(state.aiUsageLogs.map((item) => item.feature))).map((feature) => ({
+    feature,
+    value: state.aiUsageLogs.filter((item) => item.feature === feature).length
+  }));
+  const searchedTopics = state.aiUsageLogs
+    .filter((item) => item.feature === "semantic_search" || item.feature === "research_explorer")
+    .slice(0, 5);
 
   return (
     <div className="space-y-6">
       <SectionTitle title="Admin dashboard" description="System statistics, collection growth, faculty usage va audit overview." />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <KpiCard label="Total users" value={String(state.users.length)} hint="All active roles" accent="cyan" />
         <KpiCard label="Total books" value={String(state.records.length)} hint="Bibliographic records" accent="emerald" />
         <KpiCard label="Active loans" value={String(state.loans.filter((item) => item.status !== "returned").length)} hint="Current circulation" accent="gold" />
         <KpiCard label="Digital resources" value={String(state.digitalResources.length)} hint="Repository items" accent="rose" />
+        <KpiCard label="AI usage" value={String(state.aiUsageLogs.length)} hint="Logged AI interactions" accent="cyan" />
+        <KpiCard label="Reading plan users" value={String(new Set(state.readingPlans.map((item) => item.userId)).size)} hint="Students using AI plans" accent="emerald" />
       </div>
       <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <Card className="h-[340px]">
@@ -3503,6 +3819,32 @@ function AdminArea({
               <Legend />
             </PieChart>
           </ResponsiveContainer>
+        </Card>
+      </div>
+      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+        <Card className="h-[320px]">
+          <p className="mb-4 text-lg font-semibold text-ink">AI feature usage</p>
+          <p className="sr-only">Bar chart showing how often semantic search, reading plans, quizzes and other AI tools were used.</p>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={aiFeatureUsage}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="feature" />
+              <YAxis />
+              <Tooltip />
+              <Bar dataKey="value" fill="#15b7d6" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+        <Card>
+          <p className="text-lg font-semibold text-ink">Most searched topics</p>
+          <div className="mt-4 space-y-3">
+            {searchedTopics.map((entry) => (
+              <div key={entry.id} className="rounded-2xl border border-slate-200 p-3">
+                <p className="font-semibold text-ink">{entry.input}</p>
+                <p className="mt-1 text-sm text-slate-500">{entry.feature} • {entry.outputSummary}</p>
+              </div>
+            ))}
+          </div>
         </Card>
       </div>
       <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
@@ -3592,6 +3934,7 @@ export function RoutePage({ segments }: { segments: string[] }) {
   const state = useAppStore();
   const currentUser = selectCurrentUser(state);
   const { push } = useToast();
+  const protectedPortal = routeRole(segments[0]);
 
   useEffect(() => {
     if (!state.hydrated) {
@@ -3602,7 +3945,6 @@ export function RoutePage({ segments }: { segments: string[] }) {
       return;
     }
 
-    const protectedPortal = routeRole(segments[0]);
     if (protectedPortal) {
       if (!currentUser) {
         router.replace("/login");
@@ -3610,12 +3952,12 @@ export function RoutePage({ segments }: { segments: string[] }) {
       }
       if (!roleCanAccess(currentUser.role, segments[0]!)) {
         push({ tone: "error", title: "Bu bo‘lim uchun ruxsat yetarli emas." });
-        router.replace(dashboardByRole[currentUser.role as Exclude<UserRole, "guest">]);
+        router.replace("/unauthorized");
       }
     }
-  }, [currentUser, push, router, segments, state.hydrated]);
+  }, [currentUser, protectedPortal, push, router, segments, state.hydrated]);
 
-  if (!state.hydrated) {
+  if (!state.hydrated && protectedPortal) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-10 lg:px-8">
         <div className="grid gap-4">
@@ -3649,7 +3991,6 @@ export function RoutePage({ segments }: { segments: string[] }) {
     );
   };
 
-  const protectedPortal = routeRole(segments[0]);
   if (!protectedPortal) {
     return (
       <>

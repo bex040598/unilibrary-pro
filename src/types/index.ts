@@ -1,4 +1,6 @@
 export type Language = "uz" | "ru" | "en";
+export type AIConfidence = "high" | "medium" | "low";
+export type CitationStyle = "APA 7" | "MLA" | "Chicago" | "GOST-like" | "Uzbek scientific";
 
 export type UserRole =
   | "guest"
@@ -44,6 +46,9 @@ export type AccessLevel = "public" | "university only" | "faculty only" | "staff
 export type AcquisitionStatus = "requested" | "approved" | "ordered" | "received" | "rejected";
 export type NotificationType = "reservation" | "loan" | "fine" | "repository" | "room" | "system";
 export type RecordStatus = "draft" | "published";
+export type ReadingPlanLevel = "beginner" | "intermediate" | "advanced";
+export type ReadingPlanStatus = "active" | "completed" | "archived";
+export type FlashcardStatus = "new" | "learning" | "learned";
 
 export interface User {
   id: string;
@@ -275,6 +280,101 @@ export interface AuditLog {
   createdAt: string;
 }
 
+export interface AIChatMessage {
+  id: string;
+  userId: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: string[];
+  confidence: AIConfidence;
+  createdAt: string;
+}
+
+export interface AIRecommendation {
+  id: string;
+  userId: string;
+  recordId?: string;
+  resourceId?: string;
+  reason: string;
+  score: number;
+  category: string;
+  createdAt: string;
+}
+
+export interface ReadingPlanItem {
+  day: number;
+  title: string;
+  task: string;
+  resourceIds: string[];
+  selfCheckQuestions: string[];
+  completed: boolean;
+}
+
+export interface ReadingPlan {
+  id: string;
+  userId: string;
+  topic: string;
+  goal: string;
+  level: ReadingPlanLevel;
+  durationDays: number;
+  items: ReadingPlanItem[];
+  language: string;
+  resourceTypePreference: string;
+  expectedOutcome: string;
+  createdAt: string;
+  status: ReadingPlanStatus;
+}
+
+export interface QuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctAnswer: string;
+  explanation: string;
+  difficulty: ReadingPlanLevel;
+  questionType: "multiple-choice" | "true-false" | "short-answer";
+}
+
+export interface Quiz {
+  id: string;
+  userId: string;
+  topic: string;
+  resourceId?: string;
+  questions: QuizQuestion[];
+  score?: number;
+  totalQuestions: number;
+  createdAt: string;
+}
+
+export interface Flashcard {
+  id: string;
+  userId: string;
+  term: string;
+  definition: string;
+  sourceId: string;
+  status: FlashcardStatus;
+  nextReviewAt: string;
+}
+
+export interface BibliographyItem {
+  id: string;
+  userId: string;
+  recordId: string;
+  style: CitationStyle;
+  citationText: string;
+  createdAt: string;
+}
+
+export interface AIUsageLog {
+  id: string;
+  userId: string;
+  feature: string;
+  input: string;
+  outputSummary: string;
+  sourceIds: string[];
+  createdAt: string;
+}
+
 export interface LibraryDatabase {
   users: User[];
   branches: LibraryBranch[];
@@ -291,6 +391,13 @@ export interface LibraryDatabase {
   vendors: Vendor[];
   notifications: Notification[];
   auditLogs: AuditLog[];
+  aiChats: AIChatMessage[];
+  aiRecommendations: AIRecommendation[];
+  readingPlans: ReadingPlan[];
+  quizzes: Quiz[];
+  flashcards: Flashcard[];
+  bibliographyItems: BibliographyItem[];
+  aiUsageLogs: AIUsageLog[];
 }
 
 export interface DemoAccount {

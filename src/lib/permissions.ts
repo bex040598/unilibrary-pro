@@ -11,10 +11,26 @@ export const dashboardByRole: Record<Exclude<UserRole, "guest">, string> = {
   superAdmin: "/admin/settings"
 };
 
-const permissions: Record<UserRole, string[]> = {
+export const permissionMatrix: Record<UserRole, string[]> = {
   guest: ["view_public", "view_catalog", "view_repository"],
-  student: ["view_public", "view_catalog", "view_repository", "reserve", "view_own_loans", "book_room"],
-  teacher: ["view_public", "view_catalog", "view_repository", "reserve", "create_reading_list", "upload_resource"],
+  student: [
+    "view_public",
+    "view_catalog",
+    "view_repository",
+    "reserve",
+    "view_own_loans",
+    "book_room",
+    "use_ai_tools",
+    "manage_bibliography"
+  ],
+  teacher: [
+    "view_public",
+    "view_catalog",
+    "view_repository",
+    "reserve",
+    "create_reading_list",
+    "upload_resource"
+  ],
   librarian: [
     "view_public",
     "view_catalog",
@@ -22,7 +38,8 @@ const permissions: Record<UserRole, string[]> = {
     "issue_return",
     "manage_reservations",
     "manage_room_checkin",
-    "view_fines"
+    "view_fines",
+    "manage_payments"
   ],
   cataloger: ["view_public", "view_catalog", "create_record", "edit_metadata", "manage_copies", "manage_authority"],
   acquisitionManager: ["view_public", "manage_acquisition", "manage_vendors", "view_budget"],
@@ -32,7 +49,7 @@ const permissions: Record<UserRole, string[]> = {
 };
 
 export function hasPermission(role: UserRole, permission: string) {
-  return permissions[role]?.includes("*") || permissions[role]?.includes(permission);
+  return permissionMatrix[role]?.includes("*") || permissionMatrix[role]?.includes(permission);
 }
 
 export function routeRole(segment?: string): UserRole | null {

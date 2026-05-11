@@ -24,7 +24,7 @@ export function ScannerMock({
       </div>
       <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-white/5 to-white/0 p-6">
         <div className="absolute inset-x-0 top-0 h-16 animate-pulseline bg-gradient-to-b from-cyan-400/0 via-cyan-400/60 to-cyan-400/0" />
-        <div className="grid min-h-[160px] place-items-center rounded-2xl border border-dashed border-cyan-300/40 bg-slate-900/60">
+        <div aria-live="polite" className="grid min-h-[160px] place-items-center rounded-2xl border border-dashed border-cyan-300/40 bg-slate-900/60">
           <div className="text-center">
             <ScanLine className="mx-auto h-10 w-10 text-cyan-300" />
             <p className="mt-3 text-xs uppercase tracking-[0.28em] text-cyan-100">{mode} scan channel</p>

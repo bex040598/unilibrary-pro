@@ -1,4 +1,5 @@
 import { createBarcode, createQrCode, createRfidTag } from "@/lib/barcode";
+import { encodeMockPassword } from "@/lib/auth";
 import { makeId, randomPick } from "@/lib/utils";
 import {
   AccessLevel,
@@ -138,7 +139,7 @@ function buildUsers(role: UserRole, count: number, startIndex: number, demo?: Pa
       id: makeId(role, absolute + 1),
       fullName,
       email: `${role.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}${absolute + 1}@unilibrary.uz`,
-      passwordHashMock: "password123",
+      passwordHashMock: encodeMockPassword("password123"),
       role,
       studentId: role === "student" ? `ST-${202400 + absolute}` : undefined,
       employeeId: role !== "student" ? `EMP-${7000 + absolute}` : undefined,
@@ -185,6 +186,8 @@ function createRecords(catalogerId: string): BibliographicRecord[] {
     const marcFields = [
       { tag: "LDR", label: "Leader", value: "00000nam a2200000 i 4500" },
       { tag: "001", label: "Control number", value: `CN-${10000 + index}` },
+      { tag: "008", label: "Fixed-length data", value: `${String(publicationYear).slice(-2)}0101s${publicationYear}    uz ||||| |||| 00| 0 uz d` },
+      { tag: "040", label: "Cataloging source", value: "UZ-TUIL |b uz |e rda |c UZ-TUIL" },
       { tag: "020", label: "ISBN", value: isbn },
       { tag: "041", label: "Language", value: randomPick(languages, index) },
       { tag: "100", label: "Main author", value: author },
@@ -193,11 +196,15 @@ function createRecords(catalogerId: string): BibliographicRecord[] {
         publishers,
         index
       )}, ${publicationYear}` },
+      { tag: "082", label: "DDC", value: `005.${index % 30}` },
+      { tag: "084", label: "BBK", value: `32.97${index % 10}` },
+      { tag: "490", label: "Series statement", value: "Universitet kursi kutubxonasi" },
       { tag: "300", label: "Physical description", value: `${180 + (index % 220)} pages` },
       { tag: "500", label: "General note", value: "Universitet fondi uchun kataloglashtirilgan yozuv" },
       { tag: "504", label: "Bibliography note", value: "Bibliografiya va ko‘rsatkichlar bilan." },
       { tag: "650", label: "Subject heading", value: faculty },
       { tag: "700", label: "Added author", value: randomPick(authors, index + 3) },
+      { tag: "710", label: "Corporate author", value: "Universitet axborot-resurs markazi" },
       { tag: "852", label: "Location", value: `Main stack / Shelf ${String.fromCharCode(65 + (index % 6))}` },
       { tag: "856", label: "Electronic access", value: index < 50 ? `https://repository.mock/${index + 1}` : "No file" }
     ];
@@ -640,6 +647,13 @@ export function createSeedData(): LibraryDatabase {
     acquisitionRequests,
     vendors,
     notifications,
-    auditLogs
+    auditLogs,
+    aiChats: [],
+    aiRecommendations: [],
+    readingPlans: [],
+    quizzes: [],
+    flashcards: [],
+    bibliographyItems: [],
+    aiUsageLogs: []
   };
 }

@@ -22,6 +22,13 @@ function extractPersistedState(state: AppStore) {
     vendors: state.vendors,
     notifications: state.notifications,
     auditLogs: state.auditLogs,
+    aiChats: state.aiChats,
+    aiRecommendations: state.aiRecommendations,
+    readingPlans: state.readingPlans,
+    quizzes: state.quizzes,
+    flashcards: state.flashcards,
+    bibliographyItems: state.bibliographyItems,
+    aiUsageLogs: state.aiUsageLogs,
     currentUserId: state.currentUserId,
     language: state.language
   };

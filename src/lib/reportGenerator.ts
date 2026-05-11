@@ -1,6 +1,7 @@
 import {
   AcquisitionRequest,
   BibliographicRecord,
+  DigitalResource,
   Fine,
   Loan,
   ReadingRoomBooking
@@ -25,9 +26,26 @@ export function buildReport(
     records: BibliographicRecord[];
     bookings: ReadingRoomBooking[];
     acquisitionRequests: AcquisitionRequest[];
+    digitalResources: DigitalResource[];
   }
 ) {
   const lines: string[] = [`Report: ${kind}`, `Generated at: ${new Date().toISOString()}`, ""];
+
+  if (kind === "daily_circulation") {
+    lines.push("Loan ID,Status,Issued At,Due At");
+    payload.loans.slice(0, 20).forEach((loan) => {
+      lines.push(`${loan.id},${loan.status},${loan.issuedAt},${loan.dueAt}`);
+    });
+  }
+
+  if (kind === "overdues") {
+    lines.push("Loan ID,User ID,Due At,Status");
+    payload.loans
+      .filter((loan) => loan.status === "overdue")
+      .forEach((loan) => {
+        lines.push(`${loan.id},${loan.userId},${loan.dueAt},${loan.status}`);
+      });
+  }
 
   if (kind === "fines") {
     lines.push("Reason,Status,Amount");
@@ -51,6 +69,13 @@ export function buildReport(
     lines.push("Booking ID,Seat,Status,Time");
     payload.bookings.forEach((booking) => {
       lines.push(`${booking.id},${booking.seatId},${booking.status},${booking.date} ${booking.startTime}`);
+    });
+  }
+
+  if (kind === "downloads") {
+    lines.push("Resource ID,Title,Downloads,Views");
+    payload.digitalResources.forEach((resource) => {
+      lines.push(`${resource.id},${resource.title},${resource.downloads},${resource.views}`);
     });
   }
 

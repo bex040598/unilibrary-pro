@@ -3,6 +3,7 @@
 import { create } from "zustand";
 
 import { createSeedData } from "@/data/seed";
+import { verifyMockPassword, encodeMockPassword } from "@/lib/auth";
 import { createBarcode, createQrCode, createRfidTag } from "@/lib/barcode";
 import { calculateOverdueFine } from "@/lib/fineCalculator";
 import { dashboardByRole } from "@/lib/permissions";
@@ -11,15 +12,22 @@ import { makeId } from "@/lib/utils";
 import {
   AccessLevel,
   AcquisitionRequest,
+  AIChatMessage,
+  AIRecommendation,
+  AIUsageLog,
   AppState,
+  BibliographyItem,
   BibliographicRecord,
   BookCopy,
   CopyStatus,
   DigitalResource,
+  Flashcard,
   FineReason,
   FineStatus,
   Loan,
   PaymentMethod,
+  Quiz,
+  ReadingPlan,
   RecordStatus,
   Reservation,
   User,
@@ -87,6 +95,10 @@ type ResourcePayload = Omit<
 
 type AcquisitionPayload = Omit<AcquisitionRequest, "id" | "requestedBy" | "createdAt" | "status">;
 type VendorPayload = Omit<Vendor, "id">;
+type AIUsagePayload = Omit<AIUsageLog, "id" | "createdAt">;
+type AIChatPayload = Omit<AIChatMessage, "id" | "createdAt">;
+type RecommendationPayload = Omit<AIRecommendation, "id" | "createdAt">;
+type BibliographyPayload = Omit<BibliographyItem, "id" | "createdAt" | "userId">;
 
 type AppActions = {
   bootstrap: (raw?: Partial<AppState>) => void;
@@ -122,6 +134,18 @@ type AppActions = {
   createAcquisitionRequest: (payload: AcquisitionPayload, actorId: string) => ActionResult;
   updateAcquisitionStatus: (requestId: string, status: AcquisitionRequest["status"], actorId: string) => ActionResult;
   addVendor: (payload: VendorPayload, actorId: string) => ActionResult;
+  trackEntityView: (payload: { actorId: string; entity: "record" | "resource"; entityId: string; details: string }) => void;
+  appendAIChat: (payload: AIChatPayload) => void;
+  saveAIRecommendations: (payload: RecommendationPayload[]) => void;
+  saveReadingPlan: (plan: ReadingPlan) => ActionResult;
+  toggleReadingPlanItem: (payload: { planId: string; day: number; actorId: string }) => void;
+  saveQuiz: (quiz: Quiz) => ActionResult;
+  scoreQuiz: (payload: { quizId: string; score: number; actorId: string }) => ActionResult;
+  saveFlashcards: (cards: Flashcard[]) => ActionResult;
+  updateFlashcardStatus: (payload: { flashcardId: string; status: Flashcard["status"]; actorId: string }) => ActionResult;
+  addBibliographyItem: (payload: BibliographyPayload) => ActionResult;
+  removeBibliographyItem: (bibliographyId: string) => void;
+  logAIUsage: (payload: AIUsagePayload) => void;
 };
 
 export type AppStore = AppState & AppActions;
@@ -176,6 +200,17 @@ function addNotification(
   ];
 }
 
+function addAIUsage(state: AppState, payload: AIUsagePayload) {
+  return [
+    {
+      id: makeId("aiuse", state.aiUsageLogs.length + 1),
+      createdAt: new Date().toISOString(),
+      ...payload
+    },
+    ...state.aiUsageLogs
+  ];
+}
+
 function getCurrentUser(state: AppState) {
   return state.users.find((item) => item.id === state.currentUserId) ?? null;
 }
@@ -223,7 +258,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   login: (email, password) => {
     const state = get();
     const user = state.users.find((item) => item.email.toLowerCase() === email.toLowerCase());
-    if (!user || user.passwordHashMock !== password) {
+    if (!user || !verifyMockPassword(user.passwordHashMock, password)) {
       return { success: false, message: "Email yoki parol noto‘g‘ri." };
     }
 
@@ -231,7 +266,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return { success: false, message: "Ushbu a’zo bloklangan. Librarian desk orqali tekshiring." };
     }
 
-    set({ currentUserId: user.id });
+    set({
+      currentUserId: user.id,
+      auditLogs: addAudit(state, user.id, "LOGIN", "User", user.id, "User signed in via mock authentication")
+    });
     return {
       success: true,
       message: "Kirish muvaffaqiyatli bajarildi.",
@@ -250,7 +288,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       id: makeId(role, state.users.length + 1),
       fullName: payload.fullName,
       email: payload.email,
-      passwordHashMock: payload.password,
+      passwordHashMock: encodeMockPassword(payload.password),
       role,
       studentId: role === "student" ? payload.studentId ?? `ST-${2026000 + state.users.length}` : undefined,
       employeeId: role === "teacher" ? `EMP-${9000 + state.users.length}` : undefined,
@@ -273,7 +311,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         "Kabinet yaratildi",
         "Foydalanuvchi kabineti va a’zolik kartasi yaratildi.",
         "system"
-      )
+      ),
+      auditLogs: addAudit(state, nextUser.id, "REGISTER", "User", nextUser.id, "New member account registered")
     });
 
     return {
@@ -282,7 +321,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
       redirect: dashboardByRole[role]
     };
   },
-  logout: () => set({ currentUserId: null }),
+  logout: () =>
+    set((state) => ({
+      currentUserId: null,
+      auditLogs:
+        state.currentUserId
+          ? addAudit(state, state.currentUserId, "LOGOUT", "User", state.currentUserId, "User signed out")
+          : state.auditLogs
+    })),
   markNotificationRead: (notificationId) =>
     set((state) => ({
       notifications: state.notifications.map((item) =>
@@ -579,12 +625,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({
       fines: state.fines.map((item) =>
         item.id === fineId
-          ? { ...item, paymentMethod: method, receiptUrl, status: "pending_confirmation" }
+          ? { ...item, paymentMethod: method, receiptUrl, status: "paid", paidAt: new Date().toISOString() }
           : item
-      )
+      ),
+      notifications: addNotification(
+        state,
+        fine.userId,
+        "Jarima to'landi",
+        "To'lov mock usuli bilan qabul qilindi va hisob yopildi.",
+        "fine"
+      ),
+      auditLogs: addAudit(state, fine.userId, "PAY_FINE", "Fine", fineId, `Fine paid with ${method}`)
     });
 
-    return { success: true, message: "To‘lov tasdiqlash uchun yuborildi." };
+    return { success: true, message: "Jarima to'landi." };
   },
   confirmFinePayment: (fineId, actorId) => {
     const state = get();
@@ -780,6 +834,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         "O‘quv zali booking yaratildi",
         "QR check-in kodi yaratildi va booking kabinetga qo‘shildi.",
         "room"
+      ),
+      auditLogs: addAudit(
+        state,
+        currentUser.id,
+        "BOOK_SEAT",
+        "ReadingRoomBooking",
+        bookingId,
+        `Seat ${seatId} booked for ${date} ${startTime}`
       )
     });
     return { success: true, message: "Joy band qilindi.", entityId: bookingId };
@@ -879,7 +941,156 @@ export const useAppStore = create<AppStore>((set, get) => ({
       auditLogs: addAudit(state, actorId, "ADD_VENDOR", "Vendor", vendorId, payload.name)
     });
     return { success: true, message: "Vendor qo‘shildi.", entityId: vendorId };
-  }
+  },
+  trackEntityView: ({ actorId, entity, entityId, details }) =>
+    set((state) => ({
+      auditLogs: addAudit(
+        state,
+        actorId,
+        entity === "record" ? "VIEW_RECORD" : "VIEW_RESOURCE",
+        entity === "record" ? "BibliographicRecord" : "DigitalResource",
+        entityId,
+        details
+      )
+    })),
+  appendAIChat: (payload) =>
+    set((state) => ({
+      aiChats: [
+        {
+          id: makeId("aichat", state.aiChats.length + 1),
+          createdAt: new Date().toISOString(),
+          ...payload
+        },
+        ...state.aiChats
+      ]
+    })),
+  saveAIRecommendations: (payload) =>
+    set((state) => ({
+      aiRecommendations: [
+        ...payload.map((item, index) => ({
+          id: makeId("airec", state.aiRecommendations.length + index + 1),
+          createdAt: new Date().toISOString(),
+          ...item
+        })),
+        ...state.aiRecommendations.filter((existing) => existing.userId !== payload[0]?.userId)
+      ]
+    })),
+  saveReadingPlan: (plan) => {
+    const state = get();
+    set({
+      readingPlans: [plan, ...state.readingPlans],
+      notifications: addNotification(
+        state,
+        plan.userId,
+        "Reja saqlandi",
+        `${plan.topic} bo'yicha o'qish rejasi kabinetga qo'shildi.`,
+        "system"
+      ),
+      auditLogs: addAudit(state, plan.userId, "SAVE_READING_PLAN", "ReadingPlan", plan.id, plan.topic)
+    });
+    return { success: true, message: "O'qish reja saqlandi.", entityId: plan.id };
+  },
+  toggleReadingPlanItem: ({ planId, day, actorId }) =>
+    set((state) => ({
+      readingPlans: state.readingPlans.map((plan) =>
+        plan.id === planId
+          ? (() => {
+              const nextItems = plan.items.map((item) =>
+                item.day === day ? { ...item, completed: !item.completed } : item
+              );
+              return {
+                ...plan,
+                items: nextItems,
+                status: nextItems.every((item) => item.completed) ? "completed" : "active"
+              };
+            })()
+          : plan
+      ),
+      auditLogs: addAudit(state, actorId, "TOGGLE_READING_PLAN_ITEM", "ReadingPlan", planId, `Day ${day} toggled`)
+    })),
+  saveQuiz: (quiz) => {
+    const state = get();
+    set({
+      quizzes: [quiz, ...state.quizzes],
+      auditLogs: addAudit(state, quiz.userId, "CREATE_AI_QUIZ", "Quiz", quiz.id, quiz.topic)
+    });
+    return { success: true, message: "AI test yaratildi.", entityId: quiz.id };
+  },
+  scoreQuiz: ({ quizId, score, actorId }) => {
+    const state = get();
+    const quiz = state.quizzes.find((item) => item.id === quizId);
+    if (!quiz) {
+      return { success: false, message: "Quiz topilmadi." };
+    }
+
+    set({
+      quizzes: state.quizzes.map((item) => (item.id === quizId ? { ...item, score } : item)),
+      auditLogs: addAudit(state, actorId, "SCORE_AI_QUIZ", "Quiz", quizId, `Score ${score}/${quiz.totalQuestions}`)
+    });
+    return { success: true, message: "Quiz natijasi saqlandi." };
+  },
+  saveFlashcards: (cards) => {
+    const state = get();
+    set({
+      flashcards: [...cards, ...state.flashcards],
+      auditLogs: addAudit(
+        state,
+        cards[0]?.userId ?? "system",
+        "CREATE_FLASHCARDS",
+        "Flashcard",
+        cards[0]?.id ?? "n/a",
+        `${cards.length} flashcard generated`
+      )
+    });
+    return { success: true, message: "Flashcardlar yaratildi." };
+  },
+  updateFlashcardStatus: ({ flashcardId, status, actorId }) => {
+    const state = get();
+    set({
+      flashcards: state.flashcards.map((item) =>
+        item.id === flashcardId
+          ? {
+              ...item,
+              status,
+              nextReviewAt: new Date(
+                Date.now() + (status === "learned" ? 7 : status === "learning" ? 3 : 1) * 24 * 60 * 60 * 1000
+              ).toISOString()
+            }
+          : item
+      ),
+      auditLogs: addAudit(state, actorId, "UPDATE_FLASHCARD", "Flashcard", flashcardId, status)
+    });
+    return { success: true, message: "Flashcard holati yangilandi." };
+  },
+  addBibliographyItem: (payload) => {
+    const state = get();
+    const currentUser = getCurrentUser(state);
+    if (!currentUser) {
+      return { success: false, message: "Bibliografiya uchun tizimga kiring." };
+    }
+    const bibliographyId = makeId("bib", state.bibliographyItems.length + 1);
+    set({
+      bibliographyItems: [
+        {
+          id: bibliographyId,
+          userId: currentUser.id,
+          createdAt: new Date().toISOString(),
+          ...payload
+        },
+        ...state.bibliographyItems
+      ],
+      auditLogs: addAudit(state, currentUser.id, "ADD_BIBLIOGRAPHY_ITEM", "BibliographyItem", bibliographyId, payload.recordId)
+    });
+    return { success: true, message: "Bibliografiyaga qo'shildi.", entityId: bibliographyId };
+  },
+  removeBibliographyItem: (bibliographyId) =>
+    set((state) => ({
+      bibliographyItems: state.bibliographyItems.filter((item) => item.id !== bibliographyId)
+    })),
+  logAIUsage: (payload) =>
+    set((state) => ({
+      aiUsageLogs: addAIUsage(state, payload)
+    }))
 }));
 
 export function selectCurrentUser(state: AppStore) {
