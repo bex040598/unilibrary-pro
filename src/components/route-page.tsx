@@ -23,6 +23,7 @@ import {
   FileArchive,
   FileText,
   Filter,
+  Fingerprint,
   GraduationCap,
   IdCard,
   Languages,
@@ -54,7 +55,13 @@ import {
 } from "recharts";
 
 import { DataTable } from "@/components/ui/data-table";
+import { PasskeyButton } from "@/components/auth/PasskeyButton";
+import { IDCardScanner } from "@/components/identity/IDCardScanner";
+import { IdentityVerificationPanel } from "@/components/identity/IdentityVerificationPanel";
 import { PdfPreviewMock } from "@/components/ui/pdf-preview";
+import { AccessRequestModal } from "@/components/repository/AccessRequestModal";
+import { AccessPolicyBadge } from "@/components/repository/AccessPolicyBadge";
+import { RepositoryAccessGuard } from "@/components/repository/RepositoryAccessGuard";
 import {
   AIAssistantPanel,
 } from "@/components/ai/AIAssistantPanel";
@@ -84,12 +91,16 @@ import { SeatMap } from "@/components/ui/seat-map";
 import { useToast } from "@/components/ui/toast";
 import { buildSummaryFromRecord, buildStudentInsights } from "@/lib/ai/aiService";
 import { buildDublinCoreXml, buildMarcExport, buildStyledCitation, getMissingMetadata } from "@/lib/ai/citationAssistant";
+import { biometricConsentText } from "@/lib/biometric/faceEnrollment";
+import { livenessSteps } from "@/lib/biometric/livenessMock";
 import { buildStudentRecommendations } from "@/lib/ai/recommendationEngine";
+import { explainCatalogMatch, getAvailabilitySummary, getMetadataCompleteness } from "@/lib/catalog";
 import { semanticSearchRecords } from "@/lib/ai/semanticSearch";
 import { buildCitation } from "@/lib/citation";
 import { t } from "@/lib/i18n";
 import { dashboardByRole, hasPermission, permissionMatrix, routeRole } from "@/lib/permissions";
 import { buildReport } from "@/lib/reportGenerator";
+import { getRepositoryAccessDecision } from "@/lib/repositoryAccess";
 import { downloadTextFile, formatCurrency, formatDate, safeContains } from "@/lib/utils";
 import { demoAccounts } from "@/data/seed";
 import { AppStore, selectCurrentUser, useAppStore } from "@/features/store/useAppStore";
@@ -129,11 +140,15 @@ const roleMenu: Record<
     { href: "/student/fines", label: "Fines", icon: CircleDollarSign },
     { href: "/student/reading-room", label: "Reading room", icon: MapPinned },
     { href: "/student/recommendations", label: "Recommendations", icon: Sparkles },
+    { href: "/student/reading-plans", label: "Reading plans", icon: BookOpen, permission: "use_ai_tools" },
     { href: "/student/ai-assistant", label: "AI assistant", icon: Sparkles, permission: "use_ai_tools" },
     { href: "/student/ai-quiz", label: "AI quiz", icon: GraduationCap, permission: "use_ai_tools" },
     { href: "/student/flashcards", label: "Flashcards", icon: BookMarked, permission: "use_ai_tools" },
     { href: "/student/bibliography", label: "Bibliography", icon: FileText, permission: "manage_bibliography" },
     { href: "/student/research-explorer", label: "Research explorer", icon: Search, permission: "use_ai_tools" },
+    { href: "/student/identity", label: "Identity", icon: IdCard },
+    { href: "/student/face-enrollment", label: "Face enrollment", icon: Fingerprint },
+    { href: "/student/privacy-center", label: "Privacy center", icon: ShieldCheck },
     { href: "/student/profile", label: "Profile", icon: IdCard }
   ],
   teacher: [
@@ -150,7 +165,8 @@ const roleMenu: Record<
     { href: "/librarian/return", label: "Return", icon: Download },
     { href: "/librarian/reservations", label: "Reservations", icon: Bookmark },
     { href: "/librarian/overdues", label: "Overdues", icon: CircleDollarSign },
-    { href: "/librarian/reading-room", label: "Reading room", icon: MapPinned }
+    { href: "/librarian/reading-room", label: "Reading room", icon: MapPinned },
+    { href: "/librarian/identity-check", label: "Identity check", icon: ShieldCheck }
   ],
   cataloger: [
     { href: "/cataloger/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -183,6 +199,8 @@ const roleMenu: Record<
     { href: "/admin/rooms", label: "Rooms", icon: MapPinned },
     { href: "/admin/fines", label: "Fines", icon: CircleDollarSign },
     { href: "/admin/reports", label: "Reports", icon: BarChart3 },
+    { href: "/admin/biometric-audit", label: "Biometric audit", icon: Fingerprint },
+    { href: "/admin/security/identity-settings", label: "Identity security", icon: ShieldCheck },
     { href: "/admin/settings", label: "Settings", icon: Settings },
     { href: "/admin/audit-logs", label: "Audit logs", icon: FileText }
   ]
@@ -198,7 +216,9 @@ const registerSchema = z.object({
   faculty: z.string().min(2),
   department: z.string().min(2),
   group: z.string().optional(),
-  studentId: z.string().optional()
+  studentId: z.string().optional(),
+  phone: z.string().optional(),
+  cardExpiryDate: z.string().optional()
 });
 
 const loginSchema = z.object({
@@ -315,8 +335,11 @@ function statusTone(status: string) {
   if (["reserved", "pending", "pending_confirmation", "booked", "ordered", "requested"].includes(status)) {
     return "orange" as const;
   }
-  if (["borrowed", "occupied", "faculty only", "staff only"].includes(status)) {
+  if (["borrowed", "occupied", "faculty only", "staff only", "digital only"].includes(status)) {
     return "cyan" as const;
+  }
+  if (["reading room only"].includes(status)) {
+    return "gold" as const;
   }
   if (["overdue", "lost", "damaged", "rejected", "restricted"].includes(status)) {
     return "rose" as const;
@@ -325,20 +348,11 @@ function statusTone(status: string) {
 }
 
 function metadataCompleteness(record: BibliographicRecord) {
-  const missing = getMissingMetadata(record).length;
-  const score = Math.max(40, 100 - missing * 12);
-  return {
-    score,
-    tone: score > 85 ? ("emerald" as const) : score > 65 ? ("gold" as const) : ("orange" as const)
-  };
+  return getMetadataCompleteness(record);
 }
 
 function availabilityForRecord(state: AppStore, recordId: string) {
-  const total = state.copies.filter((item) => item.recordId === recordId).length;
-  const available = state.copies.filter(
-    (item) => item.recordId === recordId && item.status === "available"
-  ).length;
-  return { total, available };
+  return getAvailabilitySummary(state, recordId);
 }
 
 function resourceForRecord(state: AppStore, recordId: string) {
@@ -464,7 +478,7 @@ function PublicFooter() {
       <div className="mx-auto grid max-w-7xl gap-8 px-4 py-10 text-sm text-slate-600 md:grid-cols-3 lg:px-8">
         <div>
           <p className="font-semibold text-ink">UniLibrary Pro</p>
-          <p className="mt-2">Bibliografik yozuvlar, circulation, repository va o‘quv zali jarayonlari yagona demo platformada birlashtirilgan.</p>
+          <p className="mt-2">Bibliografik yozuvlar, circulation, repository, AI learning tools va o&apos;quv zali jarayonlari yagona akademik platformada boshqariladi.</p>
         </div>
         <div>
           <p className="font-semibold text-ink">Kutubxona aloqasi</p>
@@ -474,7 +488,7 @@ function PublicFooter() {
         </div>
         <div>
           <p className="font-semibold text-ink">Standart tayyorgarlik</p>
-          <p className="mt-2">MARC-like fields, Dublin Core metadata, QR/RFID identification va OAI-PMH-ready repository tuzilmasi demo darajasida qo‘llangan.</p>
+          <p className="mt-2">MARC-like fields, Dublin Core metadata, QR/RFID identification va OAI-PMH-ready repository tuzilmasi bilan ilmiy fond boshqaruvi qo&apos;llab-quvvatlanadi.</p>
         </div>
       </div>
     </footer>
@@ -683,10 +697,22 @@ function LandingPage({ language }: { language: Language }) {
       <div className="mx-auto max-w-7xl px-4 py-14 lg:px-8 lg:py-20">
         <div className="grid gap-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
           <div className="space-y-8">
-            <Badge tone="gold">Production-like academic platform</Badge>
+            <Badge tone="gold">Academic SaaS library operations</Badge>
             <div className="space-y-5">
               <h1 className="text-4xl leading-tight text-white md:text-6xl">{t(language, "landingHeroTitle")}</h1>
               <p className="max-w-2xl text-lg text-slate-200">{t(language, "landingHeroSubtitle")}</p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              {[
+                ["AI yordamchi bilan aqlli qidiruv", "Fan nomi, subject heading, synonym va faculty konteksti bo'yicha tavsiya."],
+                ["Talaba uchun shaxsiy o'qish yo'li", "Reading plan, quiz, flashcard va bibliography jarayonlari bir kabinetda."],
+                ["Kutubxonachi uchun real circulation desk", "Issue, return, renew, fine va receipt oqimlari bir ish stoli ichida."]
+              ].map(([title, description]) => (
+                <div key={title} className="rounded-[28px] border border-white/12 bg-white/8 p-4 backdrop-blur">
+                  <p className="text-sm font-semibold text-white">{title}</p>
+                  <p className="mt-2 text-sm text-slate-300">{description}</p>
+                </div>
+              ))}
             </div>
             <div className="flex flex-wrap gap-3">
               <Link href="/catalog">
@@ -724,19 +750,19 @@ function LandingPage({ language }: { language: Language }) {
       <div className="mx-auto max-w-7xl space-y-6 px-4 pb-16 lg:px-8">
         <SectionTitle
           eyebrow="Platform modules"
-          title="Akademik kutubxona ish jarayonlari uchun to‘liq kontur"
-          description="Har bir modul real universitet fondi jarayonlariga mos terminologiya va interaksiyalar bilan ishlaydi."
+          title="Universitet fondi, repository va AI learning workflow yagona platformada"
+          description="Har bir modul bibliografik yozuv, circulation, repository access policy, reading analytics va audit talablariga mos ravishda ishlaydi."
         />
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
           {[
-            ["Elektron katalog", "MARC-like metadata, inventory number, shelf code va faceted filters."],
-            ["Raqamli repository", "PDF preview, access policy, watermark va faculty collections."],
-            ["Kutubxonachi ish stoli", "Issue / return / renew / fine / reservation approval bitta deskda."],
-            ["QR/RFID circulation", "Barcode, QR va RFID mock identification oqimlari."],
-            ["O‘quv zali band qilish", "Seat map, QR check-in, occupancy dashboard."],
-            ["Fond analitikasi", "Borrow count, faculty usage, collection growth va downloads."],
-            ["Foydalanuvchi kabineti", "Borrowed items, due dates, fines, notifications va bookings."],
-            ["Admin nazorati", "Users, roles, rooms, reports, audit log va system settings."]
+            ["AI yordamchi bilan aqlli qidiruv", "Catalog va repository ichidagi grounded manbalar asosida prompt chips, confidence badge va source cards qaytaradi."],
+            ["Talaba uchun shaxsiy o'qish yo'li", "Borrowed kitoblar, due soon risk, reading plan progress, quiz natijalari va bibliography bitta kabinetda jamlanadi."],
+            ["Kutubxonachi uchun real circulation desk", "Student ID, barcode, RFID, active loans, return, renew, overdue fine va receipt oqimlari to'liq qayd etiladi."],
+            ["Repository va ilmiy manbalar markazi", "Access policy, embargo, faculty-only resurslar, so'rov yuborish va download audit nazorati bilan."],
+            ["Jahon standartlariga tayyor metadata", "MARC-like fields, Dublin Core mapping, OAI-PMH mock eksport va metadata quality warnings."],
+            ["Analitika va qaror qabul qilish paneli", "Faculty usage, AI feature usage, fine status, reading room occupancy va audit signals asosida boshqaruv ko'rsatkichlari."],
+            ["QR/RFID circulation preview", "Self-check identifikatsiya va inventory-level copy monitoring operatsion holatda ko'rsatiladi."],
+            ["Reading room occupancy preview", "Seat map, QR check-in va no-show monitoring bilan o'quv zali oqimi boshqariladi."]
           ].map(([title, description]) => (
             <Card key={title} className="bg-white/95 text-ink">
               <p className="text-lg font-semibold">{title}</p>
@@ -875,9 +901,19 @@ function CatalogPage({
   if (selectedRecord) {
     const resource = resourceForRecord(state, selectedRecord.id);
     const copies = state.copies.filter((item) => item.recordId === selectedRecord.id);
+    const availabilityInfo = availabilityForRecord(state, selectedRecord.id);
     const similar = state.records
       .filter((item) => item.id !== selectedRecord.id && item.faculty === selectedRecord.faculty)
       .slice(0, 4);
+    const relatedResources = state.digitalResources
+      .filter((item) => item.recordId === selectedRecord.id || item.faculty === selectedRecord.faculty)
+      .slice(0, 4);
+    const reservationQueue = state.reservations
+      .filter((item) => item.recordId === selectedRecord.id && ["pending", "approved"].includes(item.status))
+      .slice(0, 6);
+    const circulationHistory = state.loans
+      .filter((loan) => copies.some((copy) => copy.id === loan.copyId))
+      .slice(0, 6);
     const summary = buildSummaryFromRecord({
       title: selectedRecord.title,
       annotation: selectedRecord.annotation,
@@ -938,6 +974,12 @@ function CatalogPage({
               >
                 Bibliografiyaga qo‘shish
               </Button>
+              <Button variant="secondary" onClick={() => router.push(currentViewerId ? "/student/reading-plans" : "/login")}>
+                Generate AI study plan
+              </Button>
+              <Button variant="secondary" onClick={() => router.push(currentViewerId ? "/student/ai-quiz" : "/login")}>
+                Generate quiz
+              </Button>
             </>
           }
         />
@@ -945,6 +987,13 @@ function CatalogPage({
           <Card className="space-y-5">
             <BookCover record={selectedRecord} />
             <Badge tone={completeness.tone}>Metadata completeness {completeness.score}%</Badge>
+            {completeness.warnings.length ? (
+              <div className="flex flex-wrap gap-2">
+                {completeness.warnings.map((warning) => (
+                  <Badge key={warning} tone="orange">{warning}</Badge>
+                ))}
+              </div>
+            ) : null}
             <div className="space-y-3 text-sm text-slate-700">
               <p><span className="font-semibold">ISBN:</span> {selectedRecord.isbn}</p>
               <p><span className="font-semibold">ISSN:</span> {selectedRecord.issn}</p>
@@ -952,7 +1001,8 @@ function CatalogPage({
               <p><span className="font-semibold">Language:</span> {selectedRecord.language}</p>
               <p><span className="font-semibold">Pages:</span> {selectedRecord.pages}</p>
               <p><span className="font-semibold">Shelf location:</span> {copies[0] ? `${copies[0].shelf} / ${copies[0].row}` : "No holdings"}</p>
-              <p><span className="font-semibold">Availability:</span> {availabilityForRecord(state, selectedRecord.id).available} / {availabilityForRecord(state, selectedRecord.id).total}</p>
+              <p><span className="font-semibold">Availability:</span> {availabilityInfo.available} / {availabilityInfo.total}</p>
+              <p><span className="font-semibold">Access pattern:</span> {availabilityInfo.label}</p>
             </div>
           </Card>
           <div className="space-y-6">
@@ -972,6 +1022,50 @@ function CatalogPage({
                 </div>
               </div>
             </Card>
+            <Card>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-lg font-semibold text-ink">Holdings and availability</p>
+                <Badge tone={statusTone(availabilityInfo.label)}>{availabilityInfo.label}</Badge>
+              </div>
+              <div className="mt-4">
+                <DataTable data={copies} columns={columns} />
+              </div>
+            </Card>
+            <Card className="grid gap-4 lg:grid-cols-2">
+              <div>
+                <p className="text-lg font-semibold text-ink">Reservation queue</p>
+                <div className="mt-4 space-y-3">
+                  {reservationQueue.length === 0 ? (
+                    <p className="text-sm text-slate-500">Bu yozuv bo&apos;yicha faol navbat mavjud emas.</p>
+                  ) : (
+                    reservationQueue.map((item) => {
+                      const user = state.users.find((userItem) => userItem.id === item.userId);
+                      return (
+                        <div key={item.id} className="rounded-2xl border border-slate-200 p-3">
+                          <p className="font-semibold text-ink">{user?.fullName ?? "Anonim foydalanuvchi"}</p>
+                          <p className="mt-1 text-sm text-slate-500">{item.status} · expires {formatDate(item.expiresAt)}</p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-ink">Circulation history</p>
+                <div className="mt-4 space-y-3">
+                  {circulationHistory.length === 0 ? (
+                    <p className="text-sm text-slate-500">Circulation tarixi hali shakllanmagan.</p>
+                  ) : (
+                    circulationHistory.map((loan) => (
+                      <div key={loan.id} className="rounded-2xl border border-slate-200 p-3">
+                        <p className="font-semibold text-ink">{loan.status}</p>
+                        <p className="mt-1 text-sm text-slate-500">Issued {formatDate(loan.issuedAt)} · Due {formatDate(loan.dueAt)}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </Card>
             <AISummaryBox
               title={selectedRecord.title}
               summary={summary.summary}
@@ -980,7 +1074,30 @@ function CatalogPage({
               examTheses={summary.examTheses}
               discussionQuestions={summary.discussionQuestions}
             />
-            <DataTable data={copies} columns={columns} />
+            <Card className="grid gap-4 xl:grid-cols-2">
+              <div>
+                <p className="text-lg font-semibold text-ink">MARC-like fields</p>
+                <div className="mt-4 space-y-2 text-sm text-slate-600">
+                  {selectedRecord.marcFields.slice(0, 10).map((field) => (
+                    <div key={`${field.tag}-${field.value}`} className="rounded-2xl border border-slate-200 p-3">
+                      <p className="font-semibold text-ink">{field.tag} · {field.label}</p>
+                      <p className="mt-1">{field.value || "Maydon to'ldirilmagan"}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-lg font-semibold text-ink">Dublin Core fields</p>
+                <div className="mt-4 space-y-2 text-sm text-slate-600">
+                  {selectedRecord.dublinCore.map((field) => (
+                    <div key={`${field.key}-${field.value}`} className="rounded-2xl border border-slate-200 p-3">
+                      <p className="font-semibold text-ink">{field.key}</p>
+                      <p className="mt-1">{field.value || "Maydon to'ldirilmagan"}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Card>
             {resource ? <PdfPreviewMock title={resource.title} watermark="University access" /> : null}
             <Card>
               <p className="text-lg font-semibold text-ink">Similar books</p>
@@ -989,6 +1106,17 @@ function CatalogPage({
                   <button key={item.id} onClick={() => router.push(`/catalog/${item.id}`)} className="rounded-[24px] border border-slate-200 p-4 text-left transition hover:border-cyan-300 hover:bg-cyan-50">
                     <p className="font-semibold text-ink">{item.title}</p>
                     <p className="mt-1 text-sm text-slate-500">{item.authors.join(", ")}</p>
+                  </button>
+                ))}
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Related digital resources</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                {relatedResources.map((item) => (
+                  <button key={item.id} onClick={() => router.push(`/repository/${item.id}`)} className="rounded-2xl border border-slate-200 p-4 text-left transition hover:bg-slate-50">
+                    <p className="font-semibold text-ink">{item.title}</p>
+                    <p className="mt-1 text-sm text-slate-500">{item.type} · {item.accessLevel}</p>
                   </button>
                 ))}
               </div>
@@ -1113,9 +1241,7 @@ function CatalogPage({
                     <BookCover record={record} />
                     <div className="space-y-3">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge tone={availabilityData.available > 0 ? "emerald" : "rose"}>
-                          {availabilityData.available > 0 ? "available" : "unavailable"}
-                        </Badge>
+                        <Badge tone={statusTone(availabilityData.label)}>{availabilityData.label}</Badge>
                         <Badge tone="cyan">{record.resourceType}</Badge>
                         <Badge tone={metadataCompleteness(record).tone}>metadata {metadataCompleteness(record).score}%</Badge>
                         {record.isNewArrival ? <Badge tone="gold">new arrival</Badge> : null}
@@ -1132,6 +1258,16 @@ function CatalogPage({
                         <p><span className="font-semibold">Available copies:</span> {availabilityData.available}</p>
                         <p><span className="font-semibold">Total copies:</span> {availabilityData.total}</p>
                       </div>
+                      <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-600">
+                        <span className="font-semibold text-ink">Why this result?</span> {explainCatalogMatch(record, deferredQuery, resource)}
+                      </div>
+                      {metadataCompleteness(record).warnings.length ? (
+                        <div className="flex flex-wrap gap-2">
+                          {metadataCompleteness(record).warnings.map((warning) => (
+                            <Badge key={warning} tone="orange">{warning}</Badge>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex flex-col gap-2">
                       <Button onClick={() => router.push(`/catalog/${record.id}`)}>{t(language, "viewDetail")}</Button>
@@ -1151,6 +1287,9 @@ function CatalogPage({
                       ) : null}
                       <Button variant="secondary" onClick={() => setCitationRecord(record)}>
                         {t(language, "citation")}
+                      </Button>
+                      <Button variant="secondary" onClick={() => router.push(currentViewerId ? "/student/reading-plans" : "/login")}>
+                        Study plan
                       </Button>
                     </div>
                   </div>
@@ -1224,11 +1363,13 @@ function RepositoryPage({
   const { push } = useToast();
   const { trackEntityView } = state;
   const [citation, setCitation] = useState<string | null>(null);
+  const [requestingResourceId, setRequestingResourceId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [facultyFilter, setFacultyFilter] = useState("all");
   const [accessFilter, setAccessFilter] = useState("all");
   const currentViewerId = state.currentUserId;
+  const currentUser = state.users.find((item) => item.id === currentViewerId) ?? null;
 
   const resource = resourceId ? state.digitalResources.find((item) => item.id === resourceId) ?? null : null;
   useEffect(() => {
@@ -1245,6 +1386,7 @@ function RepositoryPage({
 
   if (resource) {
     const linkedRecord = resource.recordId ? state.records.find((item) => item.id === resource.recordId) : null;
+    const access = getRepositoryAccessDecision(resource, currentUser);
     const summary = buildSummaryFromRecord({
       title: resource.title,
       annotation: resource.abstract,
@@ -1260,14 +1402,22 @@ function RepositoryPage({
           description={`${resource.type} · ${resource.faculty} · ${resource.year}`}
           actions={
             <>
-              <Button
-                onClick={() => {
-                  downloadTextFile(`${resource.fileName}.txt`, `${resource.title}\n${resource.abstract}`);
-                  push({ tone: "success", title: "Mock download generated." });
-                }}
-              >
-                Download
-              </Button>
+              {access.canDownload ? (
+                <Button
+                  onClick={() => {
+                    state.downloadResource({ resourceId: resource.id, actorId: currentUser?.id });
+                    downloadTextFile(`${resource.fileName}.txt`, `${resource.title}\n${resource.abstract}`);
+                    push({ tone: "success", title: "Mock download generated." });
+                  }}
+                >
+                  Download
+                </Button>
+              ) : null}
+              {access.canRequestAccess ? (
+                <Button variant="secondary" onClick={() => setRequestingResourceId(resource.id)}>
+                  Ruxsat so&apos;rovi yuborish
+                </Button>
+              ) : null}
               <Button
                 variant="secondary"
                 onClick={() =>
@@ -1285,7 +1435,21 @@ function RepositoryPage({
         />
         <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
           <div className="space-y-6">
-            <PdfPreviewMock title={resource.title} watermark={resource.accessLevel} />
+            {access.canOpen ? (
+              <PdfPreviewMock title={resource.title} watermark={resource.accessLevel} />
+            ) : (
+              <RepositoryAccessGuard
+                resource={resource}
+                user={currentUser}
+                onRequestAccess={access.canRequestAccess ? () => setRequestingResourceId(resource.id) : undefined}
+              >
+                <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50 p-6">
+                  <p className="text-sm text-slate-600">
+                    Fayl preview yopiq. Hozircha metadata, annotatsiya va bibliografik tavsif bilan tanishishingiz mumkin.
+                  </p>
+                </div>
+              </RepositoryAccessGuard>
+            )}
             <AISummaryBox
               title={resource.title}
               summary={summary.summary}
@@ -1296,6 +1460,22 @@ function RepositoryPage({
             />
           </div>
           <div className="space-y-4">
+            <RepositoryAccessGuard
+              resource={resource}
+              user={currentUser}
+              compact
+              onOpen={access.canOpen ? () => push({ tone: "info", title: "Preview panel orqali ko'rish mumkin." }) : undefined}
+              onDownload={
+                access.canDownload
+                  ? () => {
+                      state.downloadResource({ resourceId: resource.id, actorId: currentUser?.id });
+                      downloadTextFile(`${resource.fileName}.txt`, `${resource.title}\n${resource.abstract}`);
+                      push({ tone: "success", title: "Mock download generated." });
+                    }
+                  : undefined
+              }
+              onRequestAccess={access.canRequestAccess ? () => setRequestingResourceId(resource.id) : undefined}
+            />
             <Card>
               <p className="text-sm font-semibold text-ink">Repository metadata</p>
               <div className="mt-4 space-y-3 text-sm text-slate-700">
@@ -1324,6 +1504,17 @@ function RepositoryPage({
         >
           <p className="text-sm text-slate-700">{citation}</p>
         </Modal>
+        <AccessRequestModal
+          open={requestingResourceId === resource.id}
+          onClose={() => setRequestingResourceId(null)}
+          resourceTitle={resource.title}
+          defaultName={currentUser?.fullName ?? ""}
+          defaultEmail={currentUser?.email ?? ""}
+          onSubmit={(payload) => {
+            const result = state.requestResourceAccess({ resourceId: resource.id, ...payload });
+            push({ tone: result.success ? "success" : "error", title: result.message });
+          }}
+        />
       </div>
     );
   }
@@ -1380,7 +1571,7 @@ function RepositoryPage({
         {items.map((item) => (
           <Card key={item.id}>
             <div className="flex items-center justify-between">
-              <Badge tone={statusTone(item.accessLevel)}>{item.accessLevel}</Badge>
+              <AccessPolicyBadge resource={item} />
               <Badge tone="cyan">{item.type}</Badge>
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">{item.title}</h3>
@@ -1391,22 +1582,45 @@ function RepositoryPage({
               <p><span className="font-semibold">Year:</span> {item.year}</p>
               <p><span className="font-semibold">Downloads:</span> {item.downloads}</p>
             </div>
-            <div className="mt-5 flex gap-2">
-              <Button onClick={() => router.push(`/repository/${item.id}`)}>Open</Button>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  downloadTextFile(`${item.fileName}.txt`, item.abstract);
-                  push({ tone: "success", title: "Mock download generated." });
-                }}
-              >
-                Download
-              </Button>
+            <div className="mt-5">
+              <RepositoryAccessGuard
+                resource={item}
+                user={currentUser}
+                compact
+                onOpen={getRepositoryAccessDecision(item, currentUser).canOpen ? () => router.push(`/repository/${item.id}`) : undefined}
+                onDownload={
+                  getRepositoryAccessDecision(item, currentUser).canDownload
+                    ? () => {
+                        state.downloadResource({ resourceId: item.id, actorId: currentUser?.id });
+                        downloadTextFile(`${item.fileName}.txt`, item.abstract);
+                        push({ tone: "success", title: "Mock download generated." });
+                      }
+                    : undefined
+                }
+                onRequestAccess={
+                  getRepositoryAccessDecision(item, currentUser).canRequestAccess
+                    ? () => setRequestingResourceId(item.id)
+                    : undefined
+                }
+              />
             </div>
           </Card>
         ))}
       </div>
       <AIAssistantPanel promptSeed={query || "repository"} title="Repository AI yordamchisi" />
+      {requestingResourceId ? (
+        <AccessRequestModal
+          open={Boolean(requestingResourceId)}
+          onClose={() => setRequestingResourceId(null)}
+          resourceTitle={state.digitalResources.find((item) => item.id === requestingResourceId)?.title ?? "Resource"}
+          defaultName={currentUser?.fullName ?? ""}
+          defaultEmail={currentUser?.email ?? ""}
+          onSubmit={(payload) => {
+            const result = state.requestResourceAccess({ resourceId: requestingResourceId, ...payload });
+            push({ tone: result.success ? "success" : "error", title: result.message });
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1415,6 +1629,10 @@ function AuthPage({ mode, language }: { mode: "login" | "register"; language: La
   const router = useRouter();
   const store = useAppStore();
   const { push } = useToast();
+  const [identityIdentifier, setIdentityIdentifier] = useState(demoAccounts[0]!.email);
+  const [faceLoginOpen, setFaceLoginOpen] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [completedLivenessSteps, setCompletedLivenessSteps] = useState(0);
 
   const loginForm = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
@@ -1431,7 +1649,9 @@ function AuthPage({ mode, language }: { mode: "login" | "register"; language: La
       faculty: "Axborot texnologiyalari",
       department: "Dasturiy injiniring",
       group: "SE-24-1",
-      studentId: ""
+      studentId: "",
+      phone: "+998 90 000 00 00",
+      cardExpiryDate: "2028-06-30"
     }
   });
 
@@ -1446,75 +1666,147 @@ function AuthPage({ mode, language }: { mode: "login" | "register"; language: La
           />
           <Card>
             {mode === "login" ? (
-              <form
-                className="space-y-4"
-                onSubmit={loginForm.handleSubmit((values) => {
-                  const result = store.login(values.email, values.password);
-                  push({ tone: result.success ? "success" : "error", title: result.message });
-                  if (result.redirect) {
-                    router.push(result.redirect);
-                  }
-                })}
-              >
-                <div>
-                  <Label>{t(language, "email")}</Label>
-                  <Input {...loginForm.register("email")} />
+              <div className="space-y-5">
+                <form
+                  className="space-y-4"
+                  onSubmit={loginForm.handleSubmit((values) => {
+                    const result = store.login(values.email, values.password);
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                    if (result.redirect) {
+                      router.push(result.redirect);
+                    }
+                  })}
+                >
+                  <div>
+                    <Label>{t(language, "email")}</Label>
+                    <Input
+                      {...loginForm.register("email")}
+                      onChange={(event) => {
+                        loginForm.register("email").onChange(event);
+                        setIdentityIdentifier(event.target.value);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <Label>{t(language, "password")}</Label>
+                    <Input type="password" {...loginForm.register("password")} />
+                  </div>
+                  <Button type="submit" className="w-full">{t(language, "login")}</Button>
+                </form>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-ink">Alternative identity methods</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Email yoki Student ID kiriting. Face ID, QR student card va passkey alternativ kirish sifatida ishlaydi.
+                  </p>
+                  <div className="mt-4 space-y-3">
+                    <Input
+                      value={identityIdentifier}
+                      onChange={(event) => setIdentityIdentifier(event.target.value)}
+                      placeholder="student@unilibrary.uz yoki ST-2024001"
+                    />
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <Button variant="secondary" onClick={() => setFaceLoginOpen(true)}>
+                        <Fingerprint className="h-4 w-4" />
+                        Face ID orqali kirish
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          const result = store.loginWithQrCard(identityIdentifier);
+                          push({ tone: result.success ? "success" : "error", title: result.message });
+                          if (result.redirect) router.push(result.redirect);
+                        }}
+                      >
+                        <ScanLine className="h-4 w-4" />
+                        QR student card orqali kirish
+                      </Button>
+                      <PasskeyButton
+                        compact
+                        label="Passkey orqali kirish"
+                        onClick={() => {
+                          const result = store.loginWithPasskey(identityIdentifier);
+                          push({ tone: result.success ? "success" : "error", title: result.message });
+                          if (result.redirect) router.push(result.redirect);
+                        }}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <Label>{t(language, "password")}</Label>
-                  <Input type="password" {...loginForm.register("password")} />
-                </div>
-                <Button type="submit" className="w-full">{t(language, "login")}</Button>
                 <Link href="/register" className="block text-center text-sm text-cyan-700">
                   {t(language, "register")}
                 </Link>
-              </form>
+              </div>
             ) : (
-              <form
-                className="grid gap-4 md:grid-cols-2"
-                onSubmit={registerForm.handleSubmit((values) => {
-                  const result = store.register(values);
-                  push({ tone: result.success ? "success" : "error", title: result.message });
-                  if (result.redirect) {
-                    router.push(result.redirect);
-                  }
-                })}
-              >
-                <div className="md:col-span-2">
-                  <Label>{t(language, "fullName")}</Label>
-                  <Input {...registerForm.register("fullName")} />
-                </div>
-                <div>
-                  <Label>{t(language, "email")}</Label>
-                  <Input {...registerForm.register("email")} />
-                </div>
-                <div>
-                  <Label>{t(language, "password")}</Label>
-                  <Input type="password" {...registerForm.register("password")} />
-                </div>
-                <div>
-                  <Label>{t(language, "role")}</Label>
-                  <Select {...registerForm.register("role")}>
-                    <option value="student">Student</option>
-                    <option value="teacher">Teacher</option>
-                  </Select>
-                </div>
-                <div>
-                  <Label>{t(language, "faculty")}</Label>
-                  <Input {...registerForm.register("faculty")} />
-                </div>
-                <div>
-                  <Label>{t(language, "department")}</Label>
-                  <Input {...registerForm.register("department")} />
-                </div>
-                <div>
-                  <Label>{t(language, "group")}</Label>
-                  <Input {...registerForm.register("group")} />
-                </div>
-                <div className="md:col-span-2">
-                  <Button type="submit" className="w-full">{t(language, "register")}</Button>
-                </div>
-              </form>
+              <div className="space-y-5">
+                <IDCardScanner
+                  onExtract={(payload) => {
+                    registerForm.setValue("fullName", payload.fullName.value);
+                    registerForm.setValue("studentId", payload.studentId.value);
+                    registerForm.setValue("faculty", payload.faculty.value);
+                    registerForm.setValue("department", payload.department.value);
+                    registerForm.setValue("group", payload.group.value);
+                    registerForm.setValue("cardExpiryDate", payload.expiryDate.value);
+                    push({ tone: "success", title: "ID card OCR mock form maydonlarini to'ldirdi." });
+                  }}
+                />
+                <form
+                  className="grid gap-4 md:grid-cols-2"
+                  onSubmit={registerForm.handleSubmit((values) => {
+                    const result = store.register(values);
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                    if (result.redirect) {
+                      router.push(result.redirect);
+                    }
+                  })}
+                >
+                  <div className="md:col-span-2">
+                    <Label>{t(language, "fullName")}</Label>
+                    <Input {...registerForm.register("fullName")} />
+                  </div>
+                  <div>
+                    <Label>{t(language, "email")}</Label>
+                    <Input {...registerForm.register("email")} />
+                  </div>
+                  <div>
+                    <Label>{t(language, "password")}</Label>
+                    <Input type="password" {...registerForm.register("password")} />
+                  </div>
+                  <div>
+                    <Label>{t(language, "role")}</Label>
+                    <Select {...registerForm.register("role")}>
+                      <option value="student">Student</option>
+                      <option value="teacher">Teacher</option>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Student ID</Label>
+                    <Input {...registerForm.register("studentId")} />
+                  </div>
+                  <div>
+                    <Label>{t(language, "faculty")}</Label>
+                    <Input {...registerForm.register("faculty")} />
+                  </div>
+                  <div>
+                    <Label>{t(language, "department")}</Label>
+                    <Input {...registerForm.register("department")} />
+                  </div>
+                  <div>
+                    <Label>{t(language, "group")}</Label>
+                    <Input {...registerForm.register("group")} />
+                  </div>
+                  <div>
+                    <Label>Phone</Label>
+                    <Input {...registerForm.register("phone")} />
+                  </div>
+                  <div>
+                    <Label>Card expiry</Label>
+                    <Input type="date" {...registerForm.register("cardExpiryDate")} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <Button type="submit" className="w-full">{t(language, "register")}</Button>
+                  </div>
+                </form>
+              </div>
             )}
           </Card>
         </div>
@@ -1548,6 +1840,78 @@ function AuthPage({ mode, language }: { mode: "login" | "register"; language: La
           </div>
         </Card>
       </div>
+      <Modal
+        open={faceLoginOpen}
+        title="Face ID orqali kirish"
+        onClose={() => {
+          setFaceLoginOpen(false);
+          setCameraReady(false);
+          setCompletedLivenessSteps(0);
+        }}
+        footer={
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setFaceLoginOpen(false);
+                setCameraReady(false);
+                setCompletedLivenessSteps(0);
+              }}
+            >
+              Bekor qilish
+            </Button>
+            <Button
+              onClick={() => {
+                const result = store.loginWithFaceId(identityIdentifier);
+                push({ tone: result.success ? "success" : "error", title: result.message });
+                if (result.redirect) router.push(result.redirect);
+                if (result.success) {
+                  setFaceLoginOpen(false);
+                  setCameraReady(false);
+                  setCompletedLivenessSteps(0);
+                }
+              }}
+              disabled={!cameraReady || completedLivenessSteps < livenessSteps.length}
+            >
+              Verify and login
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <Card className="bg-slate-950 text-white">
+            <div className="rounded-[28px] border border-cyan-300/20 p-5">
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-cyan-200">Camera verification</p>
+              <p className="mt-2 text-sm text-slate-300">
+                Identity: {identityIdentifier || "Student ID yoki email kiriting"}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={() => setCameraReady(true)}>
+                  Camera permission grant
+                </Button>
+                <Badge tone={cameraReady ? "emerald" : "gold"}>{cameraReady ? "camera_ready" : "permission_required"}</Badge>
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <p className="font-semibold text-ink">Liveness mock stepper</p>
+            <div className="mt-4 space-y-3">
+              {livenessSteps.map((step, index) => (
+                <button
+                  key={step}
+                  onClick={() => setCompletedLivenessSteps((current) => Math.max(current, index + 1))}
+                  className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-slate-50"
+                >
+                  <span className="text-sm text-ink">{step}</span>
+                  <Badge tone={completedLivenessSteps > index ? "emerald" : "slate"}>
+                    {completedLivenessSteps > index ? "done" : "pending"}
+                  </Badge>
+                </button>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -1595,6 +1959,11 @@ function StudentAndTeacherArea({
   const readingList = useReadingList(currentUser.id);
   const [methodByFine, setMethodByFine] = useState<Record<string, string>>({});
   const [lastAiPageLog, setLastAiPageLog] = useState("");
+  const [cardPreview, setCardPreview] = useState<string | null>(null);
+  const [passkeyDeviceName, setPasskeyDeviceName] = useState("Student laptop");
+  const [enrollmentConsent, setEnrollmentConsent] = useState(false);
+  const [enrollmentCameraReady, setEnrollmentCameraReady] = useState(false);
+  const [enrollmentStepsDone, setEnrollmentStepsDone] = useState(0);
 
   const loans = state.loans.filter((item) => item.userId === currentUser.id && item.status !== "returned");
   const reservations = state.reservations.filter((item) => item.userId === currentUser.id);
@@ -1612,6 +1981,24 @@ function StudentAndTeacherArea({
   const readingPlans = state.readingPlans.filter((item) => item.userId === currentUser.id);
   const quizzes = state.quizzes.filter((item) => item.userId === currentUser.id);
   const flashcards = state.flashcards.filter((item) => item.userId === currentUser.id);
+  const bibliographyItems = state.bibliographyItems.filter((item) => item.userId === currentUser.id);
+  const biometricProfile = state.biometricProfiles.find((item) => item.userId === currentUser.id) ?? null;
+  const biometricConsent = state.biometricConsents.find((item) => item.userId === currentUser.id) ?? null;
+  const passkeys = state.passkeyCredentials.filter((item) => item.userId === currentUser.id && item.status === "active");
+  const biometricAuditHistory = state.biometricAuditLogs.filter((item) => item.userId === currentUser.id).slice(0, 8);
+  const dueSoonLoans = loans.filter((loan) => {
+    const diff = new Date(loan.dueAt).getTime() - Date.now();
+    return diff > 0 && diff <= 3 * 24 * 60 * 60 * 1000;
+  });
+  const unpaidFineTotal = fines
+    .filter((item) => item.status !== "paid" && item.status !== "waived")
+    .reduce((acc, item) => acc + item.amount, 0);
+  const weeklyActivityDays = new Set(
+    state.auditLogs
+      .filter((item) => item.userId === currentUser.id)
+      .filter((item) => new Date(item.createdAt).getTime() >= Date.now() - 7 * 24 * 60 * 60 * 1000)
+      .map((item) => item.createdAt.slice(0, 10))
+  ).size;
   const activityPoints =
     loans.length * 5 +
     reservations.length * 3 +
@@ -1630,6 +2017,8 @@ function StudentAndTeacherArea({
     score: quiz.score ?? 0,
     total: quiz.totalQuestions
   }));
+  const nextRecommendedResource = aiRecommendations[0] ?? null;
+  const activityTimeline = state.auditLogs.filter((item) => item.userId === currentUser.id).slice(0, 8);
   const subjectDistribution = Array.from(
     new Set(
       loans
@@ -1855,6 +2244,52 @@ function StudentAndTeacherArea({
     );
   }
 
+  if (path[1] === "reading-plans") {
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="AI reading plans" description="Kunma-kun o'qish rejasi, self-check savollar va bajarilish jarayoni." />
+        <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+          <ReadingPlanGenerator />
+          <Card>
+            <p className="text-lg font-semibold text-ink">Saved plans</p>
+            <div className="mt-4 space-y-4">
+              {readingPlans.length === 0 ? (
+                <EmptyState title="Reja hali yaratilmagan" description="Mavzu, daraja va davomiylik asosida birinchi AI reading plan yarating." />
+              ) : (
+                readingPlans.map((plan) => (
+                  <div key={plan.id} className="rounded-3xl border border-slate-200 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-ink">{plan.topic}</p>
+                        <p className="mt-1 text-sm text-slate-500">{plan.durationDays} kun · {plan.goal}</p>
+                      </div>
+                      <Badge tone={plan.status === "completed" ? "emerald" : "cyan"}>{plan.status}</Badge>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      {plan.items.slice(0, 4).map((item) => (
+                        <button
+                          key={`${plan.id}-${item.day}`}
+                          onClick={() => state.toggleReadingPlanItem({ planId: plan.id, day: item.day, actorId: currentUser.id })}
+                          className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-slate-50"
+                        >
+                          <div>
+                            <p className="font-semibold text-ink">Day {item.day}: {item.title}</p>
+                            <p className="mt-1 text-sm text-slate-500">{item.task}</p>
+                          </div>
+                          <Badge tone={item.completed ? "emerald" : "gold"}>{item.completed ? "done" : "active"}</Badge>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
   if (path[1] === "ai-assistant") {
     return <AIAssistantPanel title="AI Kutubxona Yordamchisi" promptSeed={currentUser.faculty} />;
   }
@@ -1875,6 +2310,379 @@ function StudentAndTeacherArea({
     return <ResearchExplorer />;
   }
 
+  if (currentUser.role === "student" && path[1] === "identity") {
+    const activeLoansCount = state.loans.filter((item) => item.userId === currentUser.id && item.status !== "returned").length;
+    const unpaidFinesCount = state.fines.filter((item) => item.userId === currentUser.id && item.status !== "paid" && item.status !== "waived").length;
+    return (
+      <div className="space-y-6">
+        <SectionTitle
+          title="Smart student identity"
+          description="Digital student card, Face ID consent, QR/barcode identifikatsiyasi va passkey boshqaruvi."
+          actions={
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => router.push("/student/face-enrollment")}>
+                <Fingerprint className="h-4 w-4" />
+                Enable Face ID
+              </Button>
+              <Button variant="secondary" onClick={() => router.push("/student/privacy-center")}>
+                <ShieldCheck className="h-4 w-4" />
+                Privacy center
+              </Button>
+            </div>
+          }
+        />
+        <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+          <Card className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                <div className="grid h-24 w-24 place-items-center rounded-[28px] bg-gradient-to-br from-slate-900 to-cyan-700 text-2xl font-semibold text-white">
+                  {currentUser.fullName.split(" ").map((item) => item[0]).slice(0, 2).join("")}
+                </div>
+                <div>
+                  <p className="text-2xl font-semibold text-ink">{currentUser.fullName}</p>
+                  <p className="mt-1 text-sm text-slate-500">{currentUser.studentId ?? currentUser.employeeId}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Badge tone={currentUser.cardStatus === "active" ? "emerald" : "rose"}>{currentUser.cardStatus}</Badge>
+                    <Badge tone={biometricProfile?.enabled ? "cyan" : "gold"}>{biometricProfile?.enabled ? "face_id_enabled" : "face_id_optional"}</Badge>
+                    <Badge tone={passkeys.length > 0 ? "emerald" : "slate"}>{passkeys.length > 0 ? "passkey_ready" : "no_passkey"}</Badge>
+                  </div>
+                </div>
+              </div>
+              <div className="grid gap-2 text-sm text-slate-600">
+                <p><span className="font-semibold">Membership:</span> {currentUser.membershipNumber}</p>
+                <p><span className="font-semibold">Faculty:</span> {currentUser.faculty}</p>
+                <p><span className="font-semibold">Department:</span> {currentUser.department}</p>
+                <p><span className="font-semibold">Group:</span> {currentUser.group ?? "—"}</p>
+                <p><span className="font-semibold">Expiry:</span> {currentUser.cardExpiryDate}</p>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <ScannerMock title="Student card QR" code={currentUser.cardQrCode} mode="QR" />
+              <ScannerMock title="Student card barcode" code={currentUser.cardBarcode} mode="Barcode" />
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <KpiCard label="Active loans" value={String(activeLoansCount)} hint="Circulation limit monitoring" accent="cyan" />
+              <KpiCard label="Unpaid fines" value={String(unpaidFinesCount)} hint="Identity risk signal" accent="rose" />
+              <KpiCard label="Passkeys" value={String(passkeys.length)} hint="Device-bound credentials" accent="emerald" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  const content = `${currentUser.fullName}\n${currentUser.studentId}\n${currentUser.faculty}\n${currentUser.membershipNumber}\nQR:${currentUser.cardQrCode}`;
+                  downloadTextFile("student-card.txt", content);
+                  push({ tone: "success", title: "Digital student card downloaded." });
+                }}
+              >
+                Download card mock
+              </Button>
+              <Button variant="secondary" onClick={() => setCardPreview(`Student card print preview\n${currentUser.fullName}\n${currentUser.studentId ?? currentUser.employeeId}\n${currentUser.faculty}`)}>
+                Print card mock
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  const result = state.regenerateStudentCard(currentUser.id, currentUser.id);
+                  push({ tone: result.success ? "success" : "error", title: result.message });
+                }}
+              >
+                Regenerate QR mock
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  const result = state.reportLostCard(currentUser.id, currentUser.id);
+                  push({ tone: result.success ? "success" : "error", title: result.message });
+                }}
+              >
+                Report lost card
+              </Button>
+            </div>
+          </Card>
+          <div className="space-y-6">
+            <Card>
+              <p className="text-lg font-semibold text-ink">Identity methods</p>
+              <div className="mt-4 space-y-3 text-sm text-slate-600">
+                <p>Face ID: {biometricProfile?.enabled ? "enabled" : "not enabled"}</p>
+                <p>Biometric consent: {biometricConsent?.status ?? "not granted"}</p>
+                <p>QR student card login: {state.identitySettings.qrCardLoginEnabled ? "enabled" : "disabled"}</p>
+              </div>
+              <div className="mt-4 space-y-3">
+                <Input value={passkeyDeviceName} onChange={(event) => setPasskeyDeviceName(event.target.value)} placeholder="Passkey device name" />
+                <PasskeyButton
+                  label="Passkey yaratish"
+                  onClick={() => {
+                    const result = state.createPasskey({ userId: currentUser.id, deviceName: passkeyDeviceName });
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                  }}
+                />
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Privacy notice</p>
+              <p className="mt-3 text-sm text-slate-600">{biometricConsentText}</p>
+            </Card>
+          </div>
+        </div>
+        <Modal
+          open={Boolean(cardPreview)}
+          title="Student card preview"
+          onClose={() => setCardPreview(null)}
+          footer={
+            <Button
+              onClick={() => {
+                if (cardPreview) {
+                  downloadTextFile("student-card-print.txt", cardPreview);
+                  push({ tone: "success", title: "Print preview exported." });
+                }
+              }}
+            >
+              Download preview
+            </Button>
+          }
+        >
+          <pre className="whitespace-pre-wrap text-sm text-slate-700">{cardPreview}</pre>
+        </Modal>
+      </div>
+    );
+  }
+
+  if (currentUser.role === "student" && path[1] === "face-enrollment") {
+    const allStepsDone = enrollmentStepsDone >= livenessSteps.length;
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Face ID enrollment" description="Consent-based biometric enrollment, liveness mock va privacy-aware template saqlash." />
+        <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+          <Card className="space-y-5">
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-cyan-700">Consent required</p>
+              <p className="mt-3 text-sm text-slate-600">{biometricConsentText}</p>
+              <button
+                onClick={() => setEnrollmentConsent((current) => !current)}
+                className="mt-4 flex items-center gap-3 rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-white"
+              >
+                <Badge tone={enrollmentConsent ? "emerald" : "gold"}>{enrollmentConsent ? "consent_granted" : "consent_required"}</Badge>
+                <span className="text-sm text-ink">I explicitly consent to optional Face ID enrollment.</span>
+              </button>
+            </div>
+            <div className="rounded-3xl border border-slate-200 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-ink">Camera permission</p>
+                  <p className="mt-1 text-sm text-slate-500">Raw face photo saqlanmaydi. Faqat mock encrypted face template yaratiladi.</p>
+                </div>
+                <Button variant="secondary" onClick={() => setEnrollmentCameraReady(true)}>
+                  Camera permission request
+                </Button>
+              </div>
+              <div className="mt-4 rounded-[28px] border border-dashed border-cyan-300/40 bg-slate-950 p-6 text-white">
+                <p className="text-sm text-cyan-200">Biometric scan frame</p>
+                <p className="mt-2 text-sm text-slate-300">{enrollmentCameraReady ? "Camera ready" : "Permission required"}</p>
+              </div>
+            </div>
+            <Card muted>
+              <p className="text-lg font-semibold text-ink">Liveness check mock</p>
+              <div className="mt-4 space-y-3">
+                {livenessSteps.map((step, index) => (
+                  <button
+                    key={step}
+                    onClick={() => setEnrollmentStepsDone((current) => Math.max(current, index + 1))}
+                    disabled={!enrollmentCameraReady}
+                    className="flex w-full items-center justify-between rounded-2xl border border-slate-200 px-4 py-3 text-left transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <span className="text-sm text-ink">{step}</span>
+                    <Badge tone={enrollmentStepsDone > index ? "emerald" : "slate"}>{enrollmentStepsDone > index ? "done" : "pending"}</Badge>
+                  </button>
+                ))}
+              </div>
+            </Card>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => {
+                  if (!enrollmentConsent) {
+                    push({ tone: "error", title: "Avval explicit consent bering." });
+                    return;
+                  }
+                  const result = state.enrollFaceId({
+                    userId: currentUser.id,
+                    templateSeed: currentUser.studentId ?? currentUser.email,
+                    completedSteps: enrollmentStepsDone,
+                    consentVersion: "2026.05"
+                  });
+                  push({ tone: result.success ? "success" : "error", title: result.message });
+                }}
+                disabled={!enrollmentConsent || !enrollmentCameraReady || !allStepsDone}
+              >
+                Generate face template
+              </Button>
+              <Button variant="secondary" onClick={() => { setEnrollmentCameraReady(false); setEnrollmentStepsDone(0); }}>
+                Retry
+              </Button>
+              <Button variant="ghost" onClick={() => router.push("/student/identity")}>
+                Skip Face ID
+              </Button>
+              {biometricProfile ? (
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    const result = state.deleteFaceId(currentUser.id, currentUser.id);
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                  }}
+                >
+                  Delete enrollment
+                </Button>
+              ) : null}
+            </div>
+          </Card>
+          <div className="space-y-6">
+            <Card>
+              <p className="text-lg font-semibold text-ink">Enrollment status</p>
+              <div className="mt-4 space-y-3 text-sm text-slate-600">
+                <p>Face ID enabled: {biometricProfile?.enabled ? "yes" : "no"}</p>
+                <p>Liveness score: {biometricProfile?.livenessScore ? biometricProfile.livenessScore.toFixed(2) : "not available"}</p>
+                <p>Consent status: {biometricConsent?.status ?? "not granted"}</p>
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Privacy safeguards</p>
+              <div className="mt-4 space-y-2 text-sm text-slate-600">
+                <p>Raw face photo localStorage&apos;da saqlanmaydi.</p>
+                <p>Faqat mock encrypted face template va audit logs saqlanadi.</p>
+                <p>Delete my Face ID va Withdraw consent actions privacy center orqali mavjud.</p>
+              </div>
+            </Card>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (currentUser.role === "student" && path[1] === "privacy-center") {
+    const privacyReport = [
+      `User: ${currentUser.fullName}`,
+      `Face ID: ${biometricProfile?.enabled ? "enabled" : "disabled"}`,
+      `Consent: ${biometricConsent?.status ?? "not granted"}`,
+      `Passkeys: ${passkeys.length}`,
+      `Card status: ${currentUser.cardStatus}`
+    ].join("\n");
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Privacy center" description="Biometric consent, identity methods, audit history va data control." />
+        <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
+          <div className="space-y-6">
+            <Card>
+              <p className="text-lg font-semibold text-ink">Enabled identity methods</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 p-4">
+                  <p className="font-semibold text-ink">Face ID</p>
+                  <p className="mt-1 text-sm text-slate-500">{biometricProfile?.enabled ? "Enabled with consent" : "Optional and currently disabled"}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4">
+                  <p className="font-semibold text-ink">Passkey</p>
+                  <p className="mt-1 text-sm text-slate-500">{passkeys.length > 0 ? `${passkeys.length} device linked` : "No active passkey"}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4">
+                  <p className="font-semibold text-ink">QR student card</p>
+                  <p className="mt-1 text-sm text-slate-500">{currentUser.cardStatus === "active" ? "Active card for library access" : "Card reported lost"}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 p-4">
+                  <p className="font-semibold text-ink">Alternative login</p>
+                  <p className="mt-1 text-sm text-slate-500">Email/password har doim fallback sifatida mavjud.</p>
+                </div>
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Privacy actions</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const result = state.withdrawBiometricConsent(currentUser.id, currentUser.id);
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                  }}
+                >
+                  Withdraw consent
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    const result = state.deleteFaceId(currentUser.id, currentUser.id);
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                  }}
+                >
+                  Delete my Face ID
+                </Button>
+                {passkeys[0] ? (
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      const result = state.deactivatePasskey(passkeys[0]!.id, currentUser.id);
+                      push({ tone: result.success ? "success" : "error", title: result.message });
+                    }}
+                  >
+                    Deactivate passkey
+                  </Button>
+                ) : null}
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    downloadTextFile("privacy-report.txt", privacyReport);
+                    push({ tone: "success", title: "Mock privacy report downloaded." });
+                  }}
+                >
+                  Download privacy report
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    state.logIdentityVerification({
+                      actorId: currentUser.id,
+                      userId: currentUser.id,
+                      method: "manual",
+                      result: "pending",
+                      confidence: "medium",
+                      purpose: "Privacy data correction request",
+                      details: "Student requested data correction review"
+                    });
+                    push({ tone: "success", title: "Data correction request mock created." });
+                  }}
+                >
+                  Request data correction
+                </Button>
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Privacy notice</p>
+              <div className="mt-4 space-y-2 text-sm text-slate-600">
+                <p>Purpose: Face ID kutubxona kabineti va verification jarayonini soddalashtiradi.</p>
+                <p>Stored: raw photo emas, faqat mock encrypted face template, consent record va audit log.</p>
+                <p>Not stored: emotion analysis, hidden surveillance yoki behavior scoring ma&apos;lumotlari.</p>
+                <p>Alternatives: email/password, QR student card va passkey mock.</p>
+                <p>Contact point: dpo@unilibrary.uz.</p>
+              </div>
+            </Card>
+          </div>
+          <Card>
+            <p className="text-lg font-semibold text-ink">Identity audit history</p>
+            <div className="mt-4 space-y-3">
+              {biometricAuditHistory.length === 0 ? (
+                <EmptyState title="Audit qaydlari yo'q" description="Enrollment, login va deletion harakatlari bu yerda ko'rsatiladi." />
+              ) : (
+                biometricAuditHistory.map((item) => (
+                  <div key={item.id} className="rounded-2xl border border-slate-200 p-3">
+                    <p className="font-semibold text-ink">{item.action}</p>
+                    <p className="mt-1 text-sm text-slate-500">{item.result} • {item.deviceInfo}</p>
+                    <p className="mt-1 text-xs text-slate-400">{formatDate(item.createdAt)}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
   if (path[1] === "profile") {
     return <UserSummaryCard currentUser={currentUser} state={state} />;
   }
@@ -1885,10 +2693,10 @@ function StudentAndTeacherArea({
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <KpiCard label="Borrowed books" value={String(loans.length)} hint="Faol loan yozuvlari" accent="cyan" />
         <KpiCard label="Reservations" value={String(reservations.length)} hint="Pending + approved reservations" accent="gold" />
-        <KpiCard label="Outstanding fines" value={formatCurrency(fines.filter((item) => item.status !== "paid" && item.status !== "waived").reduce((acc, item) => acc + item.amount, 0))} hint="To‘lov kutayotgan majburiyatlar" accent="rose" />
+        <KpiCard label="Outstanding fines" value={formatCurrency(unpaidFineTotal)} hint="To'lov kutayotgan majburiyatlar" accent="rose" />
         <KpiCard label="Reading room bookings" value={String(bookings.length)} hint="Faol QR bookinglar" accent="emerald" />
         <KpiCard label="Reading plans" value={String(readingPlans.length)} hint="Saqlangan AI o'qish rejalar" accent="cyan" />
-        <KpiCard label="Activity points" value={String(activityPoints)} hint="Gamification va learning activity" accent="gold" />
+        <KpiCard label="Activity points" value={String(activityPoints)} hint={`${weeklyActivityDays} kunlik faol reading streak`} accent="gold" />
       </div>
       <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
         <div className="space-y-6">
@@ -1902,14 +2710,97 @@ function StudentAndTeacherArea({
                   <div key={loan.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 p-3">
                     <div>
                       <p className="font-semibold text-ink">{record?.title}</p>
-                      <p className="text-sm text-slate-500">Due {formatDate(loan.dueAt)}</p>
+                      <p className="text-sm text-slate-500">Due {formatDate(loan.dueAt)} • {copy?.inventoryNumber}</p>
                     </div>
-                    <Badge tone={statusTone(loan.status)}>{loan.status}</Badge>
+                    <div className="flex flex-wrap gap-2">
+                      {dueSoonLoans.some((item) => item.id === loan.id) ? <Badge tone="gold">due soon</Badge> : null}
+                      <Badge tone={statusTone(loan.status)}>{loan.status}</Badge>
+                    </div>
                   </div>
                 );
               })}
             </div>
           </Card>
+          {currentUser.role === "student" ? (
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Card>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold text-ink">Continue learning</p>
+                    <p className="mt-1 text-sm text-slate-500">Faol planlar, quiz va reading tasklar bo&apos;yicha keyingi qadamlar.</p>
+                  </div>
+                  <Button variant="secondary" onClick={() => router.push("/student/reading-plans")}>
+                    Open plans
+                  </Button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {readingPlans.length === 0 ? (
+                    <EmptyState
+                      title="Faol o'qish reja topilmadi"
+                      description="AI yordamida 7, 14 yoki 30 kunlik reja yarating va kabinetdagi progressni kuzating."
+                    />
+                  ) : (
+                    readingPlans.slice(0, 2).map((plan) => {
+                      const completed = plan.items.filter((item) => item.completed).length;
+                      return (
+                        <div key={plan.id} className="rounded-2xl border border-slate-200 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="font-semibold text-ink">{plan.topic}</p>
+                            <Badge tone={plan.status === "completed" ? "emerald" : "cyan"}>{plan.status}</Badge>
+                          </div>
+                          <p className="mt-2 text-sm text-slate-500">
+                            {completed}/{plan.items.length} task bajarilgan • {plan.durationDays} kunlik reja
+                          </p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </Card>
+              <Card>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold text-ink">Recommended next resource</p>
+                    <p className="mt-1 text-sm text-slate-500">Faculty va AI usage signallari asosida navbatdagi tavsiya.</p>
+                  </div>
+                  <Button variant="secondary" onClick={() => router.push("/student/recommendations")}>
+                    All recommendations
+                  </Button>
+                </div>
+                <div className="mt-4">
+                  {nextRecommendedResource ? (
+                    <AIRecommendationCard
+                      title={nextRecommendedResource.title}
+                      reason={nextRecommendedResource.reason}
+                      category={nextRecommendedResource.category}
+                      difficulty={nextRecommendedResource.difficulty}
+                      estimatedReadingTime={nextRecommendedResource.estimatedReadingTime}
+                      availability={nextRecommendedResource.availability}
+                      href={`/catalog/${nextRecommendedResource.recordId}`}
+                      actionLabel="Open resource"
+                      secondaryActionLabel="Bibliografiyaga qo'shish"
+                      onSecondaryAction={() => {
+                        if (!nextRecommendedResource.recordId) return;
+                        const record = state.records.find((item) => item.id === nextRecommendedResource.recordId);
+                        if (!record) return;
+                        const result = state.addBibliographyItem({
+                          recordId: nextRecommendedResource.recordId,
+                          style: "APA 7",
+                          citationText: buildStyledCitation(record, "APA 7")
+                        });
+                        push({ tone: result.success ? "success" : "error", title: result.message });
+                      }}
+                    />
+                  ) : (
+                    <EmptyState
+                      title="Tavsiya tayyor emas"
+                      description="Katalog bilan ishlash yoki AI sahifalarini ochish orqali tavsiya signallari shakllanadi."
+                    />
+                  )}
+                </div>
+              </Card>
+            </div>
+          ) : null}
           {currentUser.role === "student" ? (
             <Card className="space-y-4">
               <div className="flex items-center justify-between gap-3">
@@ -1979,21 +2870,44 @@ function StudentAndTeacherArea({
             <Card>
               <p className="text-lg font-semibold text-ink">Saved reading plans</p>
               <div className="mt-4 space-y-3">
-                {readingPlans.slice(0, 3).map((plan) => (
-                  <div key={plan.id} className="rounded-2xl border border-slate-200 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="font-semibold text-ink">{plan.topic}</p>
-                      <Badge tone={plan.status === "completed" ? "emerald" : "cyan"}>{plan.status}</Badge>
+                {readingPlans.length === 0 ? (
+                  <EmptyState title="Reading plan topilmadi" description="AI reja yaratilib, bu yerda progress ko'rsatiladi." />
+                ) : (
+                  readingPlans.slice(0, 3).map((plan) => (
+                    <div key={plan.id} className="rounded-2xl border border-slate-200 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="font-semibold text-ink">{plan.topic}</p>
+                        <Badge tone={plan.status === "completed" ? "emerald" : "cyan"}>{plan.status}</Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-slate-500">{plan.durationDays} kun • {plan.goal}</p>
                     </div>
-                    <p className="mt-1 text-sm text-slate-500">{plan.durationDays} kun • {plan.goal}</p>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </Card>
           ) : null}
         </div>
         <div className="space-y-6">
           <UserSummaryCard currentUser={currentUser} state={state} />
+          {currentUser.role === "student" ? (
+            <Card>
+              <p className="text-lg font-semibold text-ink">Academic badges</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {badges.length === 0 ? (
+                  <p className="text-sm text-slate-500">Badge olish uchun AI reja, quiz va repository ishlatish faolligi oshiriladi.</p>
+                ) : (
+                  badges.map((badge) => (
+                    <Badge key={badge} tone="gold">{badge}</Badge>
+                  ))
+                )}
+              </div>
+              <div className="mt-4 grid gap-3 text-sm text-slate-600">
+                <p>Bibliography items: {bibliographyItems.length}</p>
+                <p>Due soon loans: {dueSoonLoans.length}</p>
+                <p>Quiz attempts: {quizzes.length}</p>
+              </div>
+            </Card>
+          ) : null}
           {currentUser.role === "student" ? <AIAssistantPanel promptSeed={currentUser.faculty} title="Kabinet AI yordamchisi" /> : null}
           <Card>
             <p className="text-lg font-semibold text-ink">Notifications</p>
@@ -2006,6 +2920,24 @@ function StudentAndTeacherArea({
               ))}
             </div>
           </Card>
+          {currentUser.role === "student" ? (
+            <Card>
+              <p className="text-lg font-semibold text-ink">Activity timeline</p>
+              <div className="mt-4 space-y-3">
+                {activityTimeline.length === 0 ? (
+                  <EmptyState title="Faoliyat qaydlari yo'q" description="Circulation, AI va repository harakatlari audit timeline sifatida shu yerda ko'rsatiladi." />
+                ) : (
+                  activityTimeline.map((item) => (
+                    <div key={item.id} className="rounded-2xl border border-slate-200 p-3">
+                      <p className="font-semibold text-ink">{item.action}</p>
+                      <p className="mt-1 text-sm text-slate-500">{item.details}</p>
+                      <p className="mt-1 text-xs text-slate-400">{formatDate(item.createdAt)}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+          ) : null}
         </div>
       </div>
       {currentUser.role === "student" ? <ReadingPlanGenerator /> : null}
@@ -2261,6 +3193,7 @@ function LibrarianArea({
   const [bookSearch, setBookSearch] = useState("");
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [selectedCopyId, setSelectedCopyId] = useState<string | null>(null);
+  const [verifiedStudentId, setVerifiedStudentId] = useState<string | null>(null);
   const [receiptModal, setReceiptModal] = useState<string | null>(null);
 
   const students = state.users.filter(
@@ -2347,6 +3280,40 @@ function LibrarianArea({
               </Card>
             );
           })}
+        </div>
+      </div>
+    );
+  }
+
+  if (path[1] === "identity-check") {
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Identity check desk" description="QR student card, Face ID va manual fallback orqali talaba shaxsini tasdiqlash." />
+        <div className="grid gap-6 xl:grid-cols-[420px_1fr]">
+          <IdentityVerificationPanel
+            state={state}
+            actorId={currentUser.id}
+            purpose="Librarian identity desk"
+            onResolved={(user) => setSelectedStudentId(user?.id ?? null)}
+          />
+          <div className="space-y-6">
+            {selectedStudent ? (
+              <>
+                <UserSummaryCard currentUser={selectedStudent} state={state} />
+                <Card>
+                  <p className="text-lg font-semibold text-ink">Verification readiness</p>
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 text-sm text-slate-600">
+                    <p>Borrowing limit: 5 items</p>
+                    <p>Blocked status: {selectedStudent.status}</p>
+                    <p>Unpaid fines: {formatCurrency(state.fines.filter((item) => item.userId === selectedStudent.id && item.status !== "paid" && item.status !== "waived").reduce((sum, item) => sum + item.amount, 0))}</p>
+                    <p>Biometric enrolled: {state.biometricProfiles.some((item) => item.userId === selectedStudent.id && item.enabled) ? "yes" : "no"}</p>
+                  </div>
+                </Card>
+              </>
+            ) : (
+              <EmptyState title="Talaba tanlanmagan" description="QR card yoki student ID orqali foydalanuvchini aniqlang." />
+            )}
+          </div>
         </div>
       </div>
     );
@@ -2487,12 +3454,26 @@ function LibrarianArea({
           </Card>
         </div>
         <div className="space-y-6">
+          <IdentityVerificationPanel
+            state={state}
+            actorId={currentUser.id}
+            purpose="Circulation issue and return verification"
+            onResolved={(user) => {
+              if (user) {
+                setSelectedStudentId(user.id);
+                setVerifiedStudentId(user.id);
+              }
+            }}
+          />
           <Card>
             <p className="text-lg font-semibold text-ink">Actions panel</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
               <Button
                 onClick={() => {
                   if (!selectedStudent || !selectedCopy) return;
+                  if (verifiedStudentId !== selectedStudent.id) {
+                    push({ tone: "info", title: "Manual fallback ishlatilmoqda: Face ID verification bajarilmagan yoki boshqa talaba tanlangan." });
+                  }
                   const result = state.issueBook({
                     userId: selectedStudent.id,
                     copyId: selectedCopy.id,
@@ -3432,15 +4413,18 @@ function RepositoryManagerArea({
   state: AppStore;
   path: string[];
 }) {
+  const { push } = useToast();
+
   if (path[1] === "upload") {
     return <RepositoryUploadArea currentUser={currentUser} state={state} actorRoute="upload" />;
   }
 
   if (path[1] === "access-control") {
     const groups = ["public", "university only", "faculty only", "staff only", "restricted"] as const;
+    const pendingRequests = state.resourceAccessRequests.filter((item) => item.status === "pending");
     return (
       <div className="space-y-6">
-        <SectionTitle title="Access control" description="Repository resources access policy overview." />
+        <SectionTitle title="Access control" description="Access policy, restricted request queue va repository governance oqimi." />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           {groups.map((level) => (
             <KpiCard
@@ -3451,6 +4435,64 @@ function RepositoryManagerArea({
               accent={level === "restricted" ? "rose" : level === "public" ? "emerald" : "cyan"}
             />
           ))}
+        </div>
+        <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
+          <Card>
+            <p className="text-lg font-semibold text-ink">Restricted access requests</p>
+            <div className="mt-4 space-y-3">
+              {pendingRequests.length === 0 ? (
+                <EmptyState
+                  title="Faol ruxsat so'rovlari yo'q"
+                  description="Restricted resurslar bo'yicha yangi so'rov tushganda shu yerda ko'rinadi."
+                />
+              ) : (
+                pendingRequests.map((request) => {
+                  const resource = state.digitalResources.find((item) => item.id === request.resourceId);
+                  return (
+                    <div key={request.id} className="rounded-2xl border border-slate-200 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-ink">{resource?.title ?? "Resurs topilmadi"}</p>
+                          <p className="mt-1 text-sm text-slate-500">{request.requesterName} • {request.requesterEmail}</p>
+                        </div>
+                        <AccessPolicyBadge level={resource?.accessLevel ?? "restricted"} />
+                      </div>
+                      <p className="mt-3 text-sm text-slate-600">{request.reason}</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Button
+                          onClick={() => {
+                            const result = state.updateResourceAccessRequestStatus(request.id, "approved", currentUser.id);
+                            push({ tone: result.success ? "success" : "error", title: result.message });
+                          }}
+                        >
+                          Approve
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            const result = state.updateResourceAccessRequestStatus(request.id, "rejected", currentUser.id);
+                            push({ tone: result.success ? "success" : "error", title: result.message });
+                          }}
+                        >
+                          Reject
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </Card>
+          <Card>
+            <p className="text-lg font-semibold text-ink">Policy notes</p>
+            <div className="mt-4 space-y-3 text-sm text-slate-600">
+              <p><span className="font-semibold text-ink">Public:</span> metadata, open and download barcha foydalanuvchilar uchun ochiq.</p>
+              <p><span className="font-semibold text-ink">University only:</span> guest faqat metadata ko&apos;radi, login qilingan foydalanuvchi to&apos;liq kiradi.</p>
+              <p><span className="font-semibold text-ink">Faculty only:</span> faqat bir xil faculty foydalanuvchilari ochadi yoki yuklab oladi.</p>
+              <p><span className="font-semibold text-ink">Staff only:</span> student download qilolmaydi, staff rollari ishlata oladi.</p>
+              <p><span className="font-semibold text-ink">Restricted:</span> to&apos;g&apos;ridan-to&apos;g&apos;ri download yopiq, access request audit bilan yuritiladi.</p>
+            </div>
+          </Card>
         </div>
       </div>
     );
@@ -3484,6 +4526,17 @@ function AdminArea({
 }) {
   const { push } = useToast();
   const [reportModal, setReportModal] = useState<string | null>(null);
+  const totalUnpaidFines = state.fines
+    .filter((item) => item.status !== "paid" && item.status !== "waived")
+    .reduce((acc, item) => acc + item.amount, 0);
+  const activeLoansCount = state.loans.filter((item) => item.status !== "returned").length;
+  const overdueLoansCount = state.loans.filter((item) => item.status === "overdue").length;
+  const reservationsCount = state.reservations.filter((item) => item.status === "pending" || item.status === "approved").length;
+  const repositoryDownloads = state.digitalResources.reduce((acc, item) => acc + item.downloads, 0);
+  const occupancyRate = Math.round(
+    (state.seats.filter((item) => item.status === "occupied" || item.status === "booked").length / state.seats.length) * 100
+  );
+  const metadataQuality = state.records.map((record) => getMetadataCompleteness(record));
 
   if (path[1] === "users") {
     const columns: ColumnDef<User>[] = [
@@ -3634,7 +4687,6 @@ function AdminArea({
   if (path[1] === "reports") {
     const kinds = [
       "daily_circulation",
-      "monthly_loans",
       "overdues",
       "fines",
       "collection_growth",
@@ -3642,7 +4694,9 @@ function AdminArea({
       "occupancy",
       "faculty_usage",
       "most_borrowed",
-      "lost_damaged"
+      "lost_damaged",
+      "ai_usage",
+      "metadata_completeness"
     ] as const;
 
     return (
@@ -3663,7 +4717,9 @@ function AdminArea({
                         records: state.records,
                         bookings: state.bookings,
                         acquisitionRequests: state.acquisitionRequests,
-                        digitalResources: state.digitalResources
+                        digitalResources: state.digitalResources,
+                        aiUsageLogs: state.aiUsageLogs,
+                        copies: state.copies
                       })
                     )
                   }
@@ -3679,7 +4735,9 @@ function AdminArea({
                       records: state.records,
                       bookings: state.bookings,
                       acquisitionRequests: state.acquisitionRequests,
-                      digitalResources: state.digitalResources
+                      digitalResources: state.digitalResources,
+                      aiUsageLogs: state.aiUsageLogs,
+                      copies: state.copies
                     });
                     downloadTextFile(`${kind}.csv`, content);
                     push({ tone: "success", title: "CSV/text report exported." });
@@ -3711,6 +4769,157 @@ function AdminArea({
         >
           <pre className="whitespace-pre-wrap text-sm text-slate-700">{reportModal}</pre>
         </Modal>
+      </div>
+    );
+  }
+
+  if (path[1] === "biometric-audit") {
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Biometric and identity audit" description="Enrollment, Face ID login, liveness failure, QR regeneration va duplicate risk monitoring." />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <KpiCard label="Enrollments" value={String(state.biometricAuditLogs.filter((item) => item.action === "FACE_ENROLLMENT" && item.result === "enrolled").length)} hint="Active face registrations" accent="emerald" />
+          <KpiCard label="Failed face logins" value={String(state.biometricAuditLogs.filter((item) => item.action === "FACE_ID_LOGIN" && item.result !== "matched").length)} hint="Verification failures" accent="rose" />
+          <KpiCard label="QR regenerations" value={String(state.biometricAuditLogs.filter((item) => item.action === "REGENERATE_QR_CARD").length)} hint="Card identity changes" accent="cyan" />
+          <KpiCard label="Risk flags" value={String(state.identityRiskFlags.length)} hint="Duplicate or suspicious attempts" accent="gold" />
+        </div>
+        <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
+          <Card>
+            <p className="text-lg font-semibold text-ink">Biometric audit timeline</p>
+            <div className="mt-4 space-y-3">
+              {state.biometricAuditLogs.slice(0, 20).map((item) => {
+                const user = state.users.find((entry) => entry.id === item.userId);
+                return (
+                  <div key={item.id} className="rounded-2xl border border-slate-200 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-semibold text-ink">{item.action}</p>
+                      <Badge tone={item.result.includes("fail") || item.result.includes("not") ? "rose" : "emerald"}>{item.result}</Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{user?.fullName ?? item.userId} • {item.deviceInfo}</p>
+                    <p className="mt-1 text-xs text-slate-400">{formatDate(item.createdAt)} • {item.ipAddressMock}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+          <div className="space-y-6">
+            <Card>
+              <p className="text-lg font-semibold text-ink">Identity risk flags</p>
+              <div className="mt-4 space-y-3">
+                {state.identityRiskFlags.length === 0 ? (
+                  <EmptyState title="Risk flag topilmadi" description="Duplicate student ID, face template va suspicious attempts shu yerda ko'rinadi." />
+                ) : (
+                  state.identityRiskFlags.slice(0, 10).map((flag) => (
+                    <div key={flag.id} className="rounded-2xl border border-slate-200 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="font-semibold text-ink">{flag.riskType}</p>
+                        <Badge tone={flag.severity === "high" ? "rose" : flag.severity === "medium" ? "gold" : "cyan"}>{flag.severity}</Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-slate-500">{flag.description}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Verification logs</p>
+              <div className="mt-4 space-y-3">
+                {state.identityVerificationRecords.slice(0, 8).map((item) => (
+                  <div key={item.id} className="rounded-2xl border border-slate-200 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="font-semibold text-ink">{item.method}</p>
+                      <Badge tone={item.confidence === "high" ? "emerald" : item.confidence === "medium" ? "gold" : "rose"}>{item.result}</Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{item.purpose}</p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+            <Card>
+              <p className="text-lg font-semibold text-ink">Export biometric audit CSV</p>
+              <Button
+                className="mt-4"
+                onClick={() => {
+                  const content = ["action,result,userId,deviceInfo,createdAt", ...state.biometricAuditLogs.map((item) => `${item.action},${item.result},${item.userId},${item.deviceInfo},${item.createdAt}`)].join("\n");
+                  downloadTextFile("biometric-audit.csv", content);
+                  push({ tone: "success", title: "Biometric audit CSV exported." });
+                }}
+              >
+                Export CSV
+              </Button>
+            </Card>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (path[1] === "security" && path[2] === "identity-settings") {
+    const settings = state.identitySettings;
+    return (
+      <div className="space-y-6">
+        <SectionTitle title="Identity security settings" description="Face ID, QR card login, passkey, liveness threshold va manual fallback boshqaruvi." />
+        <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
+          <Card className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              {[
+                ["faceIdLoginEnabled", "Face ID login"],
+                ["faceIdCirculationVerificationEnabled", "Face ID for circulation"],
+                ["qrCardLoginEnabled", "QR card login"],
+                ["passkeyEnabled", "Passkey mock"],
+                ["requireLivenessCheck", "Require liveness"],
+                ["manualFallbackEnabled", "Manual fallback"]
+              ].map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => {
+                    const result = state.updateIdentitySettings({ [key]: !settings[key as keyof typeof settings] } as Partial<typeof settings>, currentUser.id);
+                    push({ tone: result.success ? "success" : "error", title: result.message });
+                  }}
+                  className="flex items-center justify-between rounded-2xl border border-slate-200 p-4 text-left transition hover:bg-slate-50"
+                >
+                  <span className="font-semibold text-ink">{label}</span>
+                  <Badge tone={settings[key as keyof typeof settings] ? "emerald" : "rose"}>{settings[key as keyof typeof settings] ? "enabled" : "disabled"}</Badge>
+                </button>
+              ))}
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <div>
+                <Label>Liveness threshold</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={settings.livenessThreshold}
+                  onChange={(event) => state.updateIdentitySettings({ livenessThreshold: Number(event.target.value) }, currentUser.id)}
+                />
+              </div>
+              <div>
+                <Label>Max failed attempts</Label>
+                <Input
+                  type="number"
+                  value={settings.maxFailedAttempts}
+                  onChange={(event) => state.updateIdentitySettings({ maxFailedAttempts: Number(event.target.value) }, currentUser.id)}
+                />
+              </div>
+              <div>
+                <Label>Retention days</Label>
+                <Input
+                  type="number"
+                  value={settings.biometricRetentionDays}
+                  onChange={(event) => state.updateIdentitySettings({ biometricRetentionDays: Number(event.target.value) }, currentUser.id)}
+                />
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <p className="text-lg font-semibold text-ink">Security notes</p>
+            <div className="mt-4 space-y-3 text-sm text-slate-600">
+              <p>Face ID ixtiyoriy, consent-based va raw photo saqlanmaydi.</p>
+              <p>Passkey qurilma-side autentifikatsiyaga tayyor mock arxitekturaga ulangan.</p>
+              <p>Biometric audit CSV va risk flag monitoring admin nazorat panelidan eksport qilinadi.</p>
+            </div>
+          </Card>
+        </div>
       </div>
     );
   }
@@ -3779,17 +4988,39 @@ function AdminArea({
   const searchedTopics = state.aiUsageLogs
     .filter((item) => item.feature === "semantic_search" || item.feature === "research_explorer")
     .slice(0, 5);
+  const roleDistribution = Array.from(new Set(state.users.map((item) => item.role))).map((role) => ({
+    role,
+    value: state.users.filter((item) => item.role === role).length
+  }));
+  const fineStatus = ["unpaid", "pending_confirmation", "paid", "waived", "rejected"].map((status) => ({
+    status,
+    value: state.fines.filter((item) => item.status === status).length
+  }));
+  const metadataQualityPanel = {
+    excellent: metadataQuality.filter((item) => item.score === 100 || item.score === 93).length,
+    review: metadataQuality.filter((item) => item.score === 81 || item.score === 74).length,
+    weak: metadataQuality.filter((item) => item.score === 62).length
+  };
 
   return (
     <div className="space-y-6">
       <SectionTitle title="Admin dashboard" description="System statistics, collection growth, faculty usage va audit overview." />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <KpiCard label="Total users" value={String(state.users.length)} hint="All active roles" accent="cyan" />
-        <KpiCard label="Total books" value={String(state.records.length)} hint="Bibliographic records" accent="emerald" />
-        <KpiCard label="Active loans" value={String(state.loans.filter((item) => item.status !== "returned").length)} hint="Current circulation" accent="gold" />
+        <KpiCard label="Total records" value={String(state.records.length)} hint="Bibliographic records" accent="emerald" />
+        <KpiCard label="Active loans" value={String(activeLoansCount)} hint="Current circulation" accent="gold" />
+        <KpiCard label="Overdue loans" value={String(overdueLoansCount)} hint="Requires librarian follow-up" accent="rose" />
+        <KpiCard label="Reservations" value={String(reservationsCount)} hint="Active queue entries" accent="cyan" />
+        <KpiCard label="Unpaid fines" value={formatCurrency(totalUnpaidFines)} hint="Outstanding obligations" accent="gold" />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <KpiCard label="Total copies" value={String(state.copies.length)} hint="Inventory-level holdings" accent="emerald" />
         <KpiCard label="Digital resources" value={String(state.digitalResources.length)} hint="Repository items" accent="rose" />
         <KpiCard label="AI usage" value={String(state.aiUsageLogs.length)} hint="Logged AI interactions" accent="cyan" />
         <KpiCard label="Reading plan users" value={String(new Set(state.readingPlans.map((item) => item.userId)).size)} hint="Students using AI plans" accent="emerald" />
+        <KpiCard label="Repository downloads" value={String(repositoryDownloads)} hint="Download audit counter" accent="gold" />
+        <KpiCard label="Room occupancy" value={`${occupancyRate}%`} hint="Booked and occupied seats" accent="rose" />
+        <KpiCard label="Acquisition requests" value={String(state.acquisitionRequests.length)} hint="Procurement pipeline" accent="cyan" />
       </div>
       <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
         <Card className="h-[340px]">
@@ -3847,6 +5078,36 @@ function AdminArea({
           </div>
         </Card>
       </div>
+      <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+        <Card className="h-[320px]">
+          <p className="mb-4 text-lg font-semibold text-ink">Role distribution</p>
+          <p className="sr-only">Pie chart of system users grouped by role.</p>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie data={roleDistribution} dataKey="value" nameKey="role" outerRadius={105}>
+                {roleDistribution.map((entry, index) => (
+                  <Cell key={entry.role} fill={["#0f9f6e", "#15b7d6", "#c79b2d", "#2563eb", "#fb7185", "#7c3aed", "#0f172a"][index % 7]} />
+                ))}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </Card>
+        <Card className="h-[320px]">
+          <p className="mb-4 text-lg font-semibold text-ink">Fine status overview</p>
+          <p className="sr-only">Bar chart of fine statuses including unpaid, pending confirmation, paid and waived.</p>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={fineStatus}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="status" />
+              <YAxis />
+              <Tooltip />
+              <Bar dataKey="value" fill="#fb7185" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
       <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
         <Card>
           <p className="text-lg font-semibold text-ink">Top borrowed books</p>
@@ -3865,11 +5126,15 @@ function AdminArea({
             <div className="space-y-3">
               <div className="rounded-2xl border border-slate-200 p-4">
                 <p className="font-semibold text-ink">Reading room occupancy</p>
-                <p className="mt-1 text-sm text-slate-500">{Math.round((state.seats.filter((item) => item.status === "occupied" || item.status === "booked").length / state.seats.length) * 100)}% active seat usage</p>
+                <p className="mt-1 text-sm text-slate-500">{occupancyRate}% active seat usage</p>
               </div>
               <div className="rounded-2xl border border-slate-200 p-4">
                 <p className="font-semibold text-ink">Fines collected</p>
                 <p className="mt-1 text-sm text-slate-500">{formatCurrency(state.fines.filter((item) => item.status === "paid").reduce((acc, item) => acc + item.amount, 0))}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 p-4">
+                <p className="font-semibold text-ink">Metadata quality panel</p>
+                <p className="mt-1 text-sm text-slate-500">Excellent: {metadataQualityPanel.excellent} • Review: {metadataQualityPanel.review} • Weak: {metadataQualityPanel.weak}</p>
               </div>
             </div>
             <div className="space-y-3">

@@ -14,6 +14,7 @@ function extractPersistedState(state: AppStore) {
     records: state.records,
     copies: state.copies,
     digitalResources: state.digitalResources,
+    resourceAccessRequests: state.resourceAccessRequests,
     loans: state.loans,
     reservations: state.reservations,
     fines: state.fines,
@@ -29,6 +30,13 @@ function extractPersistedState(state: AppStore) {
     flashcards: state.flashcards,
     bibliographyItems: state.bibliographyItems,
     aiUsageLogs: state.aiUsageLogs,
+    biometricProfiles: state.biometricProfiles,
+    biometricConsents: state.biometricConsents,
+    biometricAuditLogs: state.biometricAuditLogs,
+    passkeyCredentials: state.passkeyCredentials,
+    identityRiskFlags: state.identityRiskFlags,
+    identityVerificationRecords: state.identityVerificationRecords,
+    identitySettings: state.identitySettings,
     currentUserId: state.currentUserId,
     language: state.language
   };

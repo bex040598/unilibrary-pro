@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 const siteName = "UniLibrary Pro";
-const siteUrl = "https://unilibrary-platformasi-bex040598.onrender.com";
+export const siteUrl =
+  process.env.URL?.replace(/\/$/, "") ||
+  process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
+  "https://unilibrary-pro-1.onrender.com";
 
 export function buildMetadata(args: {
   title: string;

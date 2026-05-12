@@ -90,6 +90,189 @@ const titles = [
   "Tizimli tahlil"
 ];
 
+const academicProfiles = [
+  {
+    title: "Sun'iy intellekt asoslari",
+    faculty: "Axborot texnologiyalari",
+    department: "Dasturiy injiniring",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["sun'iy intellekt", "machine learning", "neyron tarmoqlar"],
+    keywords: ["AI", "machine learning", "algoritmlar"],
+    shelfPrefix: "AI"
+  },
+  {
+    title: "Kiberxavfsizlikka kirish",
+    faculty: "Axborot texnologiyalari",
+    department: "Kompyuter injiniringi",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["kiberxavfsizlik", "tarmoq xavfsizligi", "axborot xavfsizligi"],
+    keywords: ["cybersecurity", "internet xavfsizligi", "threats"],
+    shelfPrefix: "SEC"
+  },
+  {
+    title: "Kompyuter tarmoqlari",
+    faculty: "Axborot texnologiyalari",
+    department: "Kompyuter injiniringi",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["kompyuter tarmoqlari", "routing", "switching"],
+    keywords: ["network", "tcp/ip", "internet"],
+    shelfPrefix: "NET"
+  },
+  {
+    title: "Ma'lumotlar bazasi tizimlari",
+    faculty: "Axborot texnologiyalari",
+    department: "Dasturiy injiniring",
+    resourceType: "E-book" as ResourceType,
+    subjects: ["ma'lumotlar bazasi", "sql", "data modeling"],
+    keywords: ["database", "sql", "normalization"],
+    shelfPrefix: "DB"
+  },
+  {
+    title: "Raqamli iqtisodiyot",
+    faculty: "Iqtisodiyot",
+    department: "Raqamli iqtisodiyot",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["raqamli iqtisodiyot", "platform economics", "fintech"],
+    keywords: ["digital economy", "fintech", "analytics"],
+    shelfPrefix: "ECO"
+  },
+  {
+    title: "Raqamli marketing",
+    faculty: "Iqtisodiyot",
+    department: "Raqamli iqtisodiyot",
+    resourceType: "Article" as ResourceType,
+    subjects: ["marketing analytics", "digital strategy", "consumer data"],
+    keywords: ["marketing", "customer journey", "brand"],
+    shelfPrefix: "MKT"
+  },
+  {
+    title: "Menejment nazariyasi",
+    faculty: "Iqtisodiyot",
+    department: "Raqamli iqtisodiyot",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["menejment", "leadership", "organizational design"],
+    keywords: ["management", "strategy", "governance"],
+    shelfPrefix: "MNG"
+  },
+  {
+    title: "Pedagogik texnologiyalar",
+    faculty: "Pedagogika",
+    department: "Pedagogik innovatsiyalar",
+    resourceType: "Methodical guide" as ResourceType,
+    subjects: ["pedagogik texnologiyalar", "lesson design", "assessment"],
+    keywords: ["education", "learning design", "curriculum"],
+    shelfPrefix: "PED"
+  },
+  {
+    title: "Raqamli ta'limda AI",
+    faculty: "Pedagogika",
+    department: "Pedagogik innovatsiyalar",
+    resourceType: "Lecture notes" as ResourceType,
+    subjects: ["raqamli ta'lim", "AI in education", "learning analytics"],
+    keywords: ["edtech", "adaptive learning", "lms"],
+    shelfPrefix: "EDU"
+  },
+  {
+    title: "Ilmiy tadqiqot metodologiyasi",
+    faculty: "Pedagogika",
+    department: "Pedagogik innovatsiyalar",
+    resourceType: "Thesis" as ResourceType,
+    subjects: ["research methodology", "academic writing", "citation"],
+    keywords: ["methodology", "research design", "bibliography"],
+    shelfPrefix: "RSH"
+  },
+  {
+    title: "Dasturiy injiniring",
+    faculty: "Muhandislik",
+    department: "Dasturiy injiniring",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["software engineering", "architecture", "testing"],
+    keywords: ["software", "agile", "testing"],
+    shelfPrefix: "SWE"
+  },
+  {
+    title: "Operatsion tizimlar",
+    faculty: "Muhandislik",
+    department: "Kompyuter injiniringi",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["operatsion tizimlar", "process management", "memory"],
+    keywords: ["os", "kernel", "threads"],
+    shelfPrefix: "OPS"
+  },
+  {
+    title: "Bulutli texnologiyalar",
+    faculty: "Muhandislik",
+    department: "Kompyuter injiniringi",
+    resourceType: "E-book" as ResourceType,
+    subjects: ["cloud computing", "virtualization", "distributed systems"],
+    keywords: ["cloud", "containers", "microservices"],
+    shelfPrefix: "CLD"
+  },
+  {
+    title: "Amaliy filologiya tadqiqotlari",
+    faculty: "Filologiya",
+    department: "Amaliy filologiya",
+    resourceType: "Journal issue" as ResourceType,
+    subjects: ["philology", "linguistics", "text analysis"],
+    keywords: ["language", "corpus", "stylistics"],
+    shelfPrefix: "PHL"
+  },
+  {
+    title: "Akademik yozuv uslublari",
+    faculty: "Filologiya",
+    department: "Amaliy filologiya",
+    resourceType: "Methodical guide" as ResourceType,
+    subjects: ["academic writing", "citation ethics", "editing"],
+    keywords: ["writing", "apa", "mla"],
+    shelfPrefix: "WRT"
+  },
+  {
+    title: "Elektron hukumat",
+    faculty: "Huquq",
+    department: "Konstitutsiyaviy huquq",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["e-government", "public services", "digital policy"],
+    keywords: ["government", "services", "law"],
+    shelfPrefix: "LAW"
+  },
+  {
+    title: "Axborot tizimlari auditi",
+    faculty: "Huquq",
+    department: "Konstitutsiyaviy huquq",
+    resourceType: "Article" as ResourceType,
+    subjects: ["audit", "compliance", "information systems"],
+    keywords: ["audit", "risk", "governance"],
+    shelfPrefix: "AUD"
+  },
+  {
+    title: "Tibbiy informatika",
+    faculty: "Tibbiyot",
+    department: "Tibbiy informatika",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["medical informatics", "health data", "clinical systems"],
+    keywords: ["health", "informatics", "ehr"],
+    shelfPrefix: "MED"
+  },
+  {
+    title: "Ma'lumotlar tahlili",
+    faculty: "Tibbiyot",
+    department: "Tibbiy informatika",
+    resourceType: "E-book" as ResourceType,
+    subjects: ["data analysis", "statistics", "visualization"],
+    keywords: ["analytics", "statistics", "visualization"],
+    shelfPrefix: "DAT"
+  },
+  {
+    title: "Oliy matematika",
+    faculty: "Muhandislik",
+    department: "Kompyuter injiniringi",
+    resourceType: "Printed book" as ResourceType,
+    subjects: ["calculus", "linear algebra", "discrete mathematics"],
+    keywords: ["mathematics", "analysis", "equations"],
+    shelfPrefix: "MAT"
+  }
+] as const;
+
 const resourceTypes = [
   "Printed book",
   "E-book",
@@ -152,6 +335,9 @@ function buildUsers(role: UserRole, count: number, startIndex: number, demo?: Pa
       status: absolute % 17 === 0 && role === "student" ? "blocked" : "active",
       membershipNumber: `M-${role.slice(0, 3).toUpperCase()}-${9000 + absolute}`,
       cardQrCode: createQrCode(`user-${role}-${absolute}`),
+      cardBarcode: createBarcode(`user-${role}-${absolute}`),
+      cardStatus: "active",
+      cardExpiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 2)).toISOString().slice(0, 10),
       createdAt: isoOffset(-300 + absolute)
     };
 
@@ -161,27 +347,28 @@ function buildUsers(role: UserRole, count: number, startIndex: number, demo?: Pa
 
 function createRecords(catalogerId: string): BibliographicRecord[] {
   return Array.from({ length: 100 }, (_, index) => {
-    const title = randomPick(titles, index);
+    const profile = academicProfiles[index % academicProfiles.length]!;
+    const title = profile.title;
     const author = randomPick(authors, index);
-    const faculty = randomPick(faculties, index);
-    const department = randomPick(departments, index);
+    const faculty = profile.faculty;
+    const department = profile.department;
     const publicationYear = 2014 + (index % 12);
-    const resourceType = randomPick(resourceTypes, index) as ResourceType;
-    const isbn = `978-9943-${1000 + index}-${(index % 8) + 1}`;
+    const resourceType = profile.resourceType;
+    const gapMode = index % 5;
+    const isbn = gapMode >= 2 ? "" : `978-9943-${1000 + index}-${(index % 8) + 1}`;
     const subtitle = [
       "nazariy va amaliy yondashuv",
-      "universitet kursi uchun qo‘llanma",
-      "amaliy mashg‘ulotlar to‘plami",
+      "universitet kursi uchun qo'llanma",
+      "amaliy mashg'ulotlar to'plami",
       "raqamli transformatsiya kontekstida"
     ][index % 4];
-    const annotation = `${title} bo‘yicha bibliografik yozuv. Mazkur nashr ${faculty.toLocaleLowerCase()} ta’lim dasturlari uchun mo‘ljallangan bo‘lib, ${department.toLocaleLowerCase()} fanlari kesimida metodik va analitik materiallarni qamrab oladi.`;
-    const keywords = [
-      title.split(" ")[0],
-      faculty,
-      "bibliographic record",
-      "Dublin Core",
-      "MARC"
-    ];
+    const annotation = `${title} bo'yicha yozuv ${faculty.toLocaleLowerCase()} yo'nalishi uchun tuzilgan. Resurs ${department.toLocaleLowerCase()} fanlari, amaliy mashg'ulotlar va ilmiy izlanishlarda foydalanish uchun tavsiya etiladi.`;
+    const publisher = gapMode >= 1 ? "" : randomPick(publishers, index);
+    const subjects = gapMode >= 3 ? [] : [...profile.subjects, faculty, department];
+    const keywords = [...profile.keywords, faculty, department];
+    const udc = gapMode >= 4 ? "" : `004.${index % 90}/${(index % 8) + 1}`;
+    const bbk = gapMode >= 4 ? "" : `32.97${index % 10}`;
+    const ddc = gapMode >= 4 ? "" : `005.${index % 30}`;
 
     const marcFields = [
       { tag: "LDR", label: "Leader", value: "00000nam a2200000 i 4500" },
@@ -192,33 +379,30 @@ function createRecords(catalogerId: string): BibliographicRecord[] {
       { tag: "041", label: "Language", value: randomPick(languages, index) },
       { tag: "100", label: "Main author", value: author },
       { tag: "245", label: "Title", value: `${title} : ${subtitle}` },
-      { tag: "260", label: "Publication", value: `${randomPick(["Toshkent", "Samarqand", "Namangan"], index)} : ${randomPick(
-        publishers,
-        index
-      )}, ${publicationYear}` },
-      { tag: "082", label: "DDC", value: `005.${index % 30}` },
-      { tag: "084", label: "BBK", value: `32.97${index % 10}` },
+      { tag: "260", label: "Publication", value: `${randomPick(["Toshkent", "Samarqand", "Namangan"], index)} : ${publisher || "Nashriyot aniqlanmoqda"}, ${publicationYear}` },
+      { tag: "082", label: "DDC", value: ddc || "Classification pending" },
+      { tag: "084", label: "BBK", value: bbk || "Classification pending" },
       { tag: "490", label: "Series statement", value: "Universitet kursi kutubxonasi" },
       { tag: "300", label: "Physical description", value: `${180 + (index % 220)} pages` },
       { tag: "500", label: "General note", value: "Universitet fondi uchun kataloglashtirilgan yozuv" },
-      { tag: "504", label: "Bibliography note", value: "Bibliografiya va ko‘rsatkichlar bilan." },
-      { tag: "650", label: "Subject heading", value: faculty },
+      { tag: "504", label: "Bibliography note", value: "Bibliografiya va ko'rsatkichlar bilan." },
+      { tag: "650", label: "Subject heading", value: subjects[0] ?? "Subject pending" },
       { tag: "700", label: "Added author", value: randomPick(authors, index + 3) },
       { tag: "710", label: "Corporate author", value: "Universitet axborot-resurs markazi" },
-      { tag: "852", label: "Location", value: `Main stack / Shelf ${String.fromCharCode(65 + (index % 6))}` },
+      { tag: "852", label: "Location", value: `Main stack / Shelf ${profile.shelfPrefix}-${String.fromCharCode(65 + (index % 6))}` },
       { tag: "856", label: "Electronic access", value: index < 50 ? `https://repository.mock/${index + 1}` : "No file" }
     ];
 
     const dublinCore = [
       { key: "dc:title", value: title },
       { key: "dc:creator", value: author },
-      { key: "dc:subject", value: faculty },
+      { key: "dc:subject", value: subjects.join("; ") },
       { key: "dc:description", value: annotation },
-      { key: "dc:publisher", value: randomPick(publishers, index) },
+      { key: "dc:publisher", value: publisher || "Publisher pending" },
       { key: "dc:date", value: String(publicationYear) },
       { key: "dc:type", value: resourceType },
       { key: "dc:format", value: "text/pdf" },
-      { key: "dc:identifier", value: isbn },
+      { key: "dc:identifier", value: isbn || `CN-${10000 + index}` },
       { key: "dc:language", value: randomPick(languages, index) },
       { key: "dc:rights", value: "University educational use" }
     ];
@@ -231,7 +415,7 @@ function createRecords(catalogerId: string): BibliographicRecord[] {
       authors: [author, randomPick(authors, index + 4)],
       editors: [randomPick(authors, index + 7)],
       translators: index % 3 === 0 ? [randomPick(authors, index + 9)] : [],
-      publisher: randomPick(publishers, index),
+      publisher,
       publicationPlace: randomPick(["Toshkent", "Samarqand", "Buxoro", "Andijon"], index),
       publicationYear,
       isbn,
@@ -243,11 +427,11 @@ function createRecords(catalogerId: string): BibliographicRecord[] {
       annotation,
       keywords,
       resourceType,
-      udc: `004.${index % 90}/${(index % 8) + 1}`,
-      bbk: `32.97${index % 10}`,
-      ddc: `005.${index % 30}`,
+      udc,
+      bbk,
+      ddc,
       lcc: `QA76.${100 + index}`,
-      subjects: [faculty, department, "akademik fond"],
+      subjects,
       faculty,
       department,
       marcFields,
@@ -313,10 +497,22 @@ function createSeats(rooms: ReadingRoom[]): Seat[] {
 
 function createCopies(records: BibliographicRecord[], branches: LibraryBranch[], rooms: ReadingRoom[]): BookCopy[] {
   return Array.from({ length: 250 }, (_, index) => {
-    const record = records[index % records.length]!;
+    const recordIndex = ((index + 10) % 90) + 10;
+    const record = records[recordIndex]!;
     const inventoryNumber = `INV-${2026}${String(index + 1).padStart(5, "0")}`;
     const branch = randomPick(branches, index);
-    const room = index % 6 === 0 ? randomPick(rooms, index) : undefined;
+    const roomOnly = recordIndex % 11 === 0;
+    const room = roomOnly ? randomPick(rooms, index) : index % 9 === 0 ? randomPick(rooms, index) : undefined;
+    const status =
+      index % 37 === 0
+        ? "repair"
+        : index % 43 === 0
+          ? "damaged"
+          : index % 61 === 0
+            ? "lost"
+            : index % 8 === 0
+              ? "reserved"
+              : "available";
     return {
       id: makeId("copy", index + 1),
       recordId: record.id,
@@ -328,7 +524,7 @@ function createCopies(records: BibliographicRecord[], branches: LibraryBranch[],
       roomId: room?.id,
       shelf: `S-${String.fromCharCode(65 + (index % 6))}${(index % 9) + 1}`,
       row: `R-${(index % 12) + 1}`,
-      status: index % 33 === 0 ? "repair" : index % 41 === 0 ? "damaged" : index % 58 === 0 ? "lost" : "available",
+      status,
       acquisitionDate: isoOffset(-600 + index),
       price: 85000 + (index % 7) * 22000,
       fundingSource: index % 3 === 0 ? "University budget" : index % 3 === 1 ? "Grant" : "Donor fund"
@@ -343,7 +539,7 @@ function createDigitalResources(records: BibliographicRecord[], repositoryManage
       id: makeId("resource", index + 1),
       recordId: record.id,
       title: `${record.title} — raqamli nusxa`,
-      type: index % 2 === 0 ? "E-book" : "Article",
+      type: index % 3 === 0 ? "E-book" : index % 3 === 1 ? "Article" : "Lecture notes",
       faculty: record.faculty,
       department: record.department,
       year: record.publicationYear,
@@ -352,7 +548,7 @@ function createDigitalResources(records: BibliographicRecord[], repositoryManage
       keywords: record.keywords,
       doi: index % 3 === 0 ? `10.2026/unilib.${index + 100}` : undefined,
       handle: `hdl:123456/${index + 1000}`,
-      accessLevel: randomPick(accessLevels, index),
+      accessLevel: accessLevels[index % accessLevels.length],
       fileUrl: `/mock/repository/${index + 1}.pdf`,
       fileName: `${record.title.replace(/\s+/g, "_").toLowerCase()}.pdf`,
       fileSize: 4_500_000 + index * 52_000,
@@ -640,6 +836,7 @@ export function createSeedData(): LibraryDatabase {
     records,
     copies,
     digitalResources,
+    resourceAccessRequests: [],
     loans,
     reservations,
     fines,
@@ -654,6 +851,23 @@ export function createSeedData(): LibraryDatabase {
     quizzes: [],
     flashcards: [],
     bibliographyItems: [],
-    aiUsageLogs: []
+    aiUsageLogs: [],
+    biometricProfiles: [],
+    biometricConsents: [],
+    biometricAuditLogs: [],
+    passkeyCredentials: [],
+    identityRiskFlags: [],
+    identityVerificationRecords: [],
+    identitySettings: {
+      faceIdLoginEnabled: true,
+      faceIdCirculationVerificationEnabled: true,
+      qrCardLoginEnabled: true,
+      passkeyEnabled: true,
+      requireLivenessCheck: true,
+      livenessThreshold: 0.82,
+      maxFailedAttempts: 3,
+      biometricRetentionDays: 365,
+      manualFallbackEnabled: true
+    }
   };
 }

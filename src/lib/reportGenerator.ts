@@ -1,6 +1,8 @@
 import {
   AcquisitionRequest,
+  AIUsageLog,
   BibliographicRecord,
+  BookCopy,
   DigitalResource,
   Fine,
   Loan,
@@ -19,7 +21,9 @@ export function buildReport(
     | "occupancy"
     | "faculty_usage"
     | "most_borrowed"
-    | "lost_damaged",
+    | "lost_damaged"
+    | "ai_usage"
+    | "metadata_completeness",
   payload: {
     loans: Loan[];
     fines: Fine[];
@@ -27,6 +31,8 @@ export function buildReport(
     bookings: ReadingRoomBooking[];
     acquisitionRequests: AcquisitionRequest[];
     digitalResources: DigitalResource[];
+    aiUsageLogs: AIUsageLog[];
+    copies: BookCopy[];
   }
 ) {
   const lines: string[] = [`Report: ${kind}`, `Generated at: ${new Date().toISOString()}`, ""];
@@ -51,6 +57,13 @@ export function buildReport(
     lines.push("Reason,Status,Amount");
     payload.fines.forEach((fine) => {
       lines.push(`${fine.reason},${fine.status},${fine.amount}`);
+    });
+  }
+
+  if (kind === "ai_usage") {
+    lines.push("Feature,User ID,Input,Summary");
+    payload.aiUsageLogs.forEach((log) => {
+      lines.push(`${log.feature},${log.userId},${JSON.stringify(log.input)},${JSON.stringify(log.outputSummary)}`);
     });
   }
 
@@ -85,6 +98,44 @@ export function buildReport(
     lines.push(`Catalog records,${total}`);
     lines.push(`Received acquisition requests,${orders}`);
     lines.push(`Estimated collection value,${formatCurrency(total * 78000)}`);
+  }
+
+  if (kind === "metadata_completeness") {
+    lines.push("Record ID,Title,Author,ISBN,Publisher,Subjects,UDC,BBK,DDC");
+    payload.records.forEach((record) => {
+      lines.push(
+        [
+          record.id,
+          JSON.stringify(record.title),
+          JSON.stringify(record.authors[0] ?? ""),
+          JSON.stringify(record.isbn),
+          JSON.stringify(record.publisher),
+          JSON.stringify(record.subjects.join("; ")),
+          JSON.stringify(record.udc),
+          JSON.stringify(record.bbk),
+          JSON.stringify(record.ddc)
+        ].join(",")
+      );
+    });
+  }
+
+  if (kind === "lost_damaged") {
+    lines.push("Copy ID,Inventory,Status,Record ID");
+    payload.copies
+      .filter((copy) => copy.status === "lost" || copy.status === "damaged" || copy.status === "repair")
+      .forEach((copy) => {
+        lines.push(`${copy.id},${copy.inventoryNumber},${copy.status},${copy.recordId}`);
+      });
+  }
+
+  if (kind === "faculty_usage") {
+    lines.push("Faculty,Borrow Count");
+    Array.from(new Set(payload.records.map((record) => record.faculty))).forEach((faculty) => {
+      const borrowCount = payload.records
+        .filter((record) => record.faculty === faculty)
+        .reduce((acc, record) => acc + record.borrowCount, 0);
+      lines.push(`${JSON.stringify(faculty)},${borrowCount}`);
+    });
   }
 
   if (lines.length === 3) {

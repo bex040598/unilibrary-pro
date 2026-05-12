@@ -3,8 +3,13 @@
 import { create } from "zustand";
 
 import { createSeedData } from "@/data/seed";
+import { createPasskeyCredentialMock } from "@/lib/auth/passkeyMock";
 import { verifyMockPassword, encodeMockPassword } from "@/lib/auth";
 import { createBarcode, createQrCode, createRfidTag } from "@/lib/barcode";
+import { buildBiometricAuditLog, buildIdentityVerificationRecord } from "@/lib/biometric/biometricAudit";
+import { buildBiometricConsent, buildBiometricProfile, biometricConsentText } from "@/lib/biometric/faceEnrollment";
+import { compareFaceTemplateHashMock } from "@/lib/biometric/faceTemplate";
+import { evaluateLivenessMock, livenessSteps } from "@/lib/biometric/livenessMock";
 import { calculateOverdueFine } from "@/lib/fineCalculator";
 import { dashboardByRole } from "@/lib/permissions";
 import { STORAGE_KEYS } from "@/lib/storage";
@@ -24,11 +29,15 @@ import {
   Flashcard,
   FineReason,
   FineStatus,
+  IdentityRiskFlag,
+  IdentitySettings,
+  IdentityVerificationRecord,
   Loan,
   PaymentMethod,
   Quiz,
   ReadingPlan,
   RecordStatus,
+  RepositoryAccessRequest,
   Reservation,
   User,
   UserRole,
@@ -53,6 +62,8 @@ type RegisterPayload = {
   department: string;
   group?: string;
   studentId?: string;
+  phone?: string;
+  cardExpiryDate?: string;
 };
 
 type RecordCopyInput = {
@@ -99,12 +110,21 @@ type AIUsagePayload = Omit<AIUsageLog, "id" | "createdAt">;
 type AIChatPayload = Omit<AIChatMessage, "id" | "createdAt">;
 type RecommendationPayload = Omit<AIRecommendation, "id" | "createdAt">;
 type BibliographyPayload = Omit<BibliographyItem, "id" | "createdAt" | "userId">;
+type ResourceAccessRequestPayload = {
+  resourceId: string;
+  requesterName: string;
+  requesterEmail: string;
+  reason: string;
+};
 
 type AppActions = {
   bootstrap: (raw?: Partial<AppState>) => void;
   setHydrated: (value: boolean) => void;
   setLanguage: (language: AppState["language"]) => void;
   login: (email: string, password: string) => ActionResult;
+  loginWithFaceId: (identifier: string) => ActionResult;
+  loginWithQrCard: (identifier: string) => ActionResult;
+  loginWithPasskey: (identifier: string) => ActionResult;
   register: (payload: RegisterPayload) => ActionResult;
   logout: () => void;
   markNotificationRead: (notificationId: string) => void;
@@ -121,6 +141,13 @@ type AppActions = {
   addManualFine: (payload: { userId: string; reason: FineReason; amount: number; actorId: string }) => ActionResult;
   saveRecord: (payload: RecordPayload, actorId: string) => ActionResult;
   uploadResource: (payload: ResourcePayload, actorId: string) => ActionResult;
+  downloadResource: (payload: { resourceId: string; actorId?: string | null }) => ActionResult;
+  requestResourceAccess: (payload: ResourceAccessRequestPayload) => ActionResult;
+  updateResourceAccessRequestStatus: (
+    requestId: string,
+    status: RepositoryAccessRequest["status"],
+    actorId: string
+  ) => ActionResult;
   bookSeat: (payload: {
     roomId: string;
     seatId: string;
@@ -146,6 +173,21 @@ type AppActions = {
   addBibliographyItem: (payload: BibliographyPayload) => ActionResult;
   removeBibliographyItem: (bibliographyId: string) => void;
   logAIUsage: (payload: AIUsagePayload) => void;
+  enrollFaceId: (payload: { userId: string; templateSeed: string; completedSteps: number; consentVersion?: string }) => ActionResult;
+  deleteFaceId: (userId: string, actorId: string) => ActionResult;
+  withdrawBiometricConsent: (userId: string, actorId: string) => ActionResult;
+  createPasskey: (payload: { userId: string; deviceName: string }) => ActionResult;
+  deactivatePasskey: (credentialId: string, actorId: string) => ActionResult;
+  regenerateStudentCard: (userId: string, actorId: string) => ActionResult;
+  reportLostCard: (userId: string, actorId: string) => ActionResult;
+  verifyStudentIdentity: (payload: {
+    actorId: string;
+    userId: string;
+    identifier: string;
+    purpose: string;
+  }) => { success: boolean; message: string; result: IdentityVerificationRecord["result"]; confidence: IdentityVerificationRecord["confidence"] };
+  logIdentityVerification: (payload: Omit<IdentityVerificationRecord, "id" | "createdAt">) => void;
+  updateIdentitySettings: (payload: Partial<IdentitySettings>, actorId: string) => ActionResult;
 };
 
 export type AppStore = AppState & AppActions;
@@ -211,8 +253,47 @@ function addAIUsage(state: AppState, payload: AIUsagePayload) {
   ];
 }
 
+function addBiometricAudit(state: AppState, payload: {
+  userId: string;
+  action: string;
+  result: string;
+  deviceInfo?: string;
+}) {
+  return [buildBiometricAuditLog(payload), ...state.biometricAuditLogs];
+}
+
+function addIdentityVerification(state: AppState, payload: Omit<IdentityVerificationRecord, "id" | "createdAt">) {
+  return [buildIdentityVerificationRecord(payload), ...state.identityVerificationRecords];
+}
+
+function addRiskFlag(state: AppState, payload: Omit<IdentityRiskFlag, "id" | "createdAt" | "status">) {
+  return [
+    {
+      id: makeId("risk", state.identityRiskFlags.length + 1),
+      createdAt: new Date().toISOString(),
+      status: "open" as const,
+      ...payload
+    },
+    ...state.identityRiskFlags
+  ];
+}
+
 function getCurrentUser(state: AppState) {
   return state.users.find((item) => item.id === state.currentUserId) ?? null;
+}
+
+function getTemplateSeed(user: User) {
+  return user.studentId || user.email;
+}
+
+function resolveUserByIdentifier(state: AppState, identifier: string) {
+  const normalized = identifier.trim().toLowerCase();
+  return (
+    state.users.find((item) => item.email.toLowerCase() === normalized) ||
+    state.users.find((item) => item.studentId?.toLowerCase() === normalized) ||
+    state.users.find((item) => item.membershipNumber.toLowerCase() === normalized) ||
+    state.users.find((item) => item.cardQrCode.toLowerCase() === normalized)
+  );
 }
 
 function getLoanLimit(role: UserRole) {
@@ -243,11 +324,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
         state.language;
 
       syncLanguageStorage(language);
-      return {
+      const nextState = {
         ...state,
         ...raw,
         language,
         hydrated: true
+      };
+      return {
+        ...nextState,
+        users: (nextState.users ?? state.users).map((user) => ({
+          ...user,
+          cardBarcode: user.cardBarcode ?? createBarcode(user.studentId ?? user.email),
+          cardStatus: user.cardStatus ?? "active",
+          cardExpiryDate:
+            user.cardExpiryDate ?? new Date(new Date().setFullYear(new Date().getFullYear() + 2)).toISOString().slice(0, 10)
+        })),
+        biometricProfiles: nextState.biometricProfiles ?? state.biometricProfiles,
+        biometricConsents: nextState.biometricConsents ?? state.biometricConsents,
+        biometricAuditLogs: nextState.biometricAuditLogs ?? state.biometricAuditLogs,
+        passkeyCredentials: nextState.passkeyCredentials ?? state.passkeyCredentials,
+        identityRiskFlags: nextState.identityRiskFlags ?? state.identityRiskFlags,
+        identityVerificationRecords: nextState.identityVerificationRecords ?? state.identityVerificationRecords,
+        identitySettings: nextState.identitySettings ?? state.identitySettings
       };
     }),
   setHydrated: (value) => set({ hydrated: value }),
@@ -268,7 +366,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     set({
       currentUserId: user.id,
-      auditLogs: addAudit(state, user.id, "LOGIN", "User", user.id, "User signed in via mock authentication")
+      auditLogs: addAudit(state, user.id, "LOGIN", "User", user.id, "User signed in via mock authentication"),
+      identityVerificationRecords: addIdentityVerification(state, {
+        userId: user.id,
+        method: "email_password",
+        result: "verified",
+        confidence: "high",
+        purpose: "Portal login",
+        details: "Email and password login"
+      })
     });
     return {
       success: true,
@@ -276,11 +382,188 @@ export const useAppStore = create<AppStore>((set, get) => ({
       redirect: user.role === "guest" ? "/" : dashboardByRole[user.role]
     };
   },
+  loginWithFaceId: (identifier) => {
+    const state = get();
+    if (!state.identitySettings.faceIdLoginEnabled) {
+      return { success: false, message: "Face ID login vaqtincha o'chirilgan." };
+    }
+
+    const user = resolveUserByIdentifier(state, identifier);
+    if (!user) {
+      return { success: false, message: "Foydalanuvchi topilmadi." };
+    }
+
+    const profile = state.biometricProfiles.find((item) => item.userId === user.id && item.enabled && item.status === "active");
+    const consent = state.biometricConsents.find((item) => item.userId === user.id && item.status === "granted");
+    if (!profile || !consent) {
+      return {
+        success: false,
+        message: "Ushbu akkaunt uchun Face ID yoqilmagan. Email/parol orqali kiring yoki Face IDni profil sozlamalarida yoqing."
+      };
+    }
+
+    const liveness = evaluateLivenessMock(identifier, livenessSteps.length);
+    if (!liveness.success || liveness.score < state.identitySettings.livenessThreshold) {
+      set({
+        biometricAuditLogs: addBiometricAudit(state, {
+          userId: user.id,
+          action: "FACE_ID_LOGIN",
+          result: "liveness_failed"
+        }),
+        identityRiskFlags: addRiskFlag(state, {
+          userId: user.id,
+          riskType: "repeated_liveness_failure",
+          severity: "medium",
+          description: "Face ID login liveness tekshiruvi muvaffaqiyatsiz yakunlandi."
+        }),
+        identityVerificationRecords: addIdentityVerification(state, {
+          userId: user.id,
+          method: "face_id",
+          result: "liveness_failed",
+          confidence: "low",
+          purpose: "Portal login",
+          details: "Face ID login liveness failed"
+        })
+      });
+      return { success: false, message: "Liveness tekshiruvi muvaffaqiyatsiz tugadi." };
+    }
+
+    const comparison = compareFaceTemplateHashMock(profile.templateHashMock, getTemplateSeed(user));
+    if (!comparison.matched) {
+      set({
+        biometricAuditLogs: addBiometricAudit(state, {
+          userId: user.id,
+          action: "FACE_ID_LOGIN",
+          result: "not_matched"
+        }),
+        identityVerificationRecords: addIdentityVerification(state, {
+          userId: user.id,
+          method: "face_id",
+          result: "not_matched",
+          confidence: "low",
+          purpose: "Portal login",
+          details: "Template comparison failed"
+        })
+      });
+      return { success: false, message: "Face ID mos kelmadi." };
+    }
+
+    set({
+      currentUserId: user.id,
+      biometricProfiles: state.biometricProfiles.map((item) =>
+        item.userId === user.id ? { ...item, lastVerifiedAt: new Date().toISOString() } : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId: user.id,
+        action: "FACE_ID_LOGIN",
+        result: "matched"
+      }),
+      auditLogs: addAudit(state, user.id, "FACE_ID_LOGIN", "User", user.id, "User signed in via Face ID mock"),
+      identityVerificationRecords: addIdentityVerification(state, {
+        userId: user.id,
+        method: "face_id",
+        result: "matched",
+        confidence: "high",
+        purpose: "Portal login",
+        details: "Face ID login succeeded"
+      })
+    });
+    return { success: true, message: "Face ID orqali kirish muvaffaqiyatli bajarildi.", redirect: dashboardByRole[user.role as Exclude<UserRole, "guest">] };
+  },
+  loginWithQrCard: (identifier) => {
+    const state = get();
+    if (!state.identitySettings.qrCardLoginEnabled) {
+      return { success: false, message: "QR card login vaqtincha o'chirilgan." };
+    }
+    const user = resolveUserByIdentifier(state, identifier);
+    if (!user || user.cardStatus === "reported_lost") {
+      return { success: false, message: "QR student card faol emas yoki topilmadi." };
+    }
+
+    set({
+      currentUserId: user.id,
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId: user.id,
+        action: "QR_CARD_LOGIN",
+        result: "verified"
+      }),
+      auditLogs: addAudit(state, user.id, "QR_CARD_LOGIN", "User", user.id, "User signed in via QR student card"),
+      identityVerificationRecords: addIdentityVerification(state, {
+        userId: user.id,
+        method: "qr_card",
+        result: "verified",
+        confidence: "high",
+        purpose: "Portal login",
+        details: "QR student card login"
+      })
+    });
+    return { success: true, message: "QR student card orqali kirish bajarildi.", redirect: dashboardByRole[user.role as Exclude<UserRole, "guest">] };
+  },
+  loginWithPasskey: (identifier) => {
+    const state = get();
+    if (!state.identitySettings.passkeyEnabled) {
+      return { success: false, message: "Passkey login vaqtincha o'chirilgan." };
+    }
+
+    const user = resolveUserByIdentifier(state, identifier);
+    if (!user) {
+      return { success: false, message: "Foydalanuvchi topilmadi." };
+    }
+
+    const credential = state.passkeyCredentials.find((item) => item.userId === user.id && item.status === "active");
+    if (!credential) {
+      return { success: false, message: "Ushbu akkaunt uchun passkey yaratilmagan." };
+    }
+
+    set({
+      currentUserId: user.id,
+      passkeyCredentials: state.passkeyCredentials.map((item) =>
+        item.id === credential.id ? { ...item, lastUsedAt: new Date().toISOString() } : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId: user.id,
+        action: "PASSKEY_LOGIN",
+        result: "verified",
+        deviceInfo: credential.deviceName
+      }),
+      auditLogs: addAudit(state, user.id, "PASSKEY_LOGIN", "PasskeyCredential", credential.id, "User signed in via passkey mock"),
+      identityVerificationRecords: addIdentityVerification(state, {
+        userId: user.id,
+        method: "passkey",
+        result: "verified",
+        confidence: "high",
+        purpose: "Portal login",
+        details: credential.deviceName
+      })
+    });
+    return { success: true, message: "Passkey orqali kirish bajarildi.", redirect: dashboardByRole[user.role as Exclude<UserRole, "guest">] };
+  },
   register: (payload) => {
     const state = get();
     const exists = state.users.some((item) => item.email.toLowerCase() === payload.email.toLowerCase());
     if (exists) {
       return { success: false, message: "Bu email allaqachon ro‘yxatdan o‘tgan." };
+    }
+
+    const duplicateStudent = payload.studentId
+      ? state.users.find((item) => item.studentId?.toLowerCase() === payload.studentId?.toLowerCase())
+      : null;
+    if (duplicateStudent) {
+      set({
+        identityRiskFlags: addRiskFlag(state, {
+          userId: duplicateStudent.id,
+          riskType: "duplicate_student_id",
+          severity: "high",
+          description: `${payload.studentId} raqami bilan takroriy ro'yxatdan o'tish urinishi aniqlangan.`
+        }),
+        biometricAuditLogs: addBiometricAudit(state, {
+          userId: duplicateStudent.id,
+          action: "DUPLICATE_STUDENT_ID",
+          result: "review_required"
+        }),
+        auditLogs: addAudit(state, duplicateStudent.id, "IDENTITY_RISK_FLAG", "IdentityRiskFlag", duplicateStudent.id, payload.studentId ?? "duplicate")
+      });
+      return { success: false, message: "Student ID takrorlandi. Librarian yoki admin review talab qilinadi." };
     }
 
     const role = payload.role;
@@ -292,13 +575,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
       role,
       studentId: role === "student" ? payload.studentId ?? `ST-${2026000 + state.users.length}` : undefined,
       employeeId: role === "teacher" ? `EMP-${9000 + state.users.length}` : undefined,
-      phone: "+998 90 000 00 00",
+      phone: payload.phone ?? "+998 90 000 00 00",
       faculty: payload.faculty,
       department: payload.department,
       group: role === "student" ? payload.group : undefined,
       status: "active",
       membershipNumber: `M-${role === "student" ? "STU" : "TEA"}-${state.users.length + 1000}`,
       cardQrCode: createQrCode(payload.email),
+      cardBarcode: createBarcode(payload.studentId ?? payload.email),
+      cardStatus: "active",
+      cardExpiryDate: payload.cardExpiryDate ?? new Date(new Date().setFullYear(new Date().getFullYear() + 2)).toISOString().slice(0, 10),
       createdAt: new Date().toISOString()
     };
 
@@ -778,6 +1064,113 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
     return { success: true, message: "Resurs repositoryga qo‘shildi.", entityId: nextId };
   },
+  downloadResource: ({ resourceId, actorId }) => {
+    const state = get();
+    const resource = state.digitalResources.find((item) => item.id === resourceId);
+    if (!resource) {
+      return { success: false, message: "Resurs topilmadi." };
+    }
+
+    const auditActor = actorId ?? state.currentUserId ?? "guest";
+    set({
+      digitalResources: state.digitalResources.map((item) =>
+        item.id === resourceId ? { ...item, downloads: item.downloads + 1 } : item
+      ),
+      auditLogs: addAudit(state, auditActor, "DOWNLOAD_RESOURCE", "DigitalResource", resourceId, resource.title)
+    });
+
+    return { success: true, message: "Yuklab olish qayd etildi." };
+  },
+  requestResourceAccess: ({ resourceId, requesterName, requesterEmail, reason }) => {
+    const state = get();
+    const currentUser = getCurrentUser(state);
+    const resource = state.digitalResources.find((item) => item.id === resourceId);
+    if (!resource) {
+      return { success: false, message: "Resurs topilmadi." };
+    }
+
+    const existing = state.resourceAccessRequests.find(
+      (item) =>
+        item.resourceId === resourceId &&
+        item.requesterEmail.toLowerCase() === requesterEmail.toLowerCase() &&
+        item.status === "pending"
+    );
+    if (existing) {
+      return { success: false, message: "Bu resurs uchun faol ruxsat so'rovi mavjud." };
+    }
+
+    const requestId = makeId("access", state.resourceAccessRequests.length + 1);
+    set({
+      resourceAccessRequests: [
+        {
+          id: requestId,
+          resourceId,
+          userId: currentUser?.id,
+          requesterName,
+          requesterEmail,
+          reason,
+          status: "pending",
+          createdAt: new Date().toISOString()
+        },
+        ...state.resourceAccessRequests
+      ],
+      identityRiskFlags: currentUser?.id
+        ? addRiskFlag(state, {
+            userId: currentUser.id,
+            riskType: "restricted_access_attempt",
+            severity: "medium",
+            description: `${resource.title} resursi uchun restricted access so'rovi yuborildi.`
+          })
+        : state.identityRiskFlags,
+      identityVerificationRecords: addIdentityVerification(state, {
+        userId: currentUser?.id,
+        actorId: currentUser?.id,
+        method: "repository_access",
+        result: "pending",
+        confidence: "medium",
+        purpose: "Restricted repository access request",
+        details: resource.title
+      }),
+      auditLogs: addAudit(
+        state,
+        currentUser?.id ?? "guest",
+        "REQUEST_RESOURCE_ACCESS",
+        "RepositoryAccessRequest",
+        requestId,
+        `${resource.title} access requested`
+      )
+    });
+
+    return { success: true, message: "Ruxsat so'rovi yuborildi.", entityId: requestId };
+  },
+  updateResourceAccessRequestStatus: (requestId, status, actorId) => {
+    const state = get();
+    const request = state.resourceAccessRequests.find((item) => item.id === requestId);
+    if (!request) {
+      return { success: false, message: "Ruxsat so'rovi topilmadi." };
+    }
+
+    set({
+      resourceAccessRequests: state.resourceAccessRequests.map((item) =>
+        item.id === requestId
+          ? { ...item, status, reviewedBy: actorId, reviewedAt: new Date().toISOString() }
+          : item
+      ),
+      notifications:
+        request.userId
+          ? addNotification(
+              state,
+              request.userId,
+              "Repository ruxsati yangilandi",
+              `${status === "approved" ? "So'rov ma'qullandi." : "So'rov rad etildi."}`,
+              "repository"
+            )
+          : state.notifications,
+      auditLogs: addAudit(state, actorId, "REVIEW_RESOURCE_ACCESS", "RepositoryAccessRequest", requestId, status)
+    });
+
+    return { success: true, message: "Ruxsat so'rovi yangilandi." };
+  },
   bookSeat: ({ roomId, seatId, date, startTime, endTime }) => {
     const state = get();
     const currentUser = getCurrentUser(state);
@@ -1087,6 +1480,294 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set((state) => ({
       bibliographyItems: state.bibliographyItems.filter((item) => item.id !== bibliographyId)
     })),
+  enrollFaceId: ({ userId, templateSeed, completedSteps, consentVersion }) => {
+    const state = get();
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) {
+      return { success: false, message: "Foydalanuvchi topilmadi." };
+    }
+
+    const liveness = evaluateLivenessMock(templateSeed, completedSteps);
+    if (!liveness.success || liveness.score < state.identitySettings.livenessThreshold) {
+      set({
+        biometricAuditLogs: addBiometricAudit(state, {
+          userId,
+          action: "FACE_ENROLLMENT",
+          result: "liveness_failed"
+        }),
+        identityRiskFlags: addRiskFlag(state, {
+          userId,
+          riskType: "repeated_liveness_failure",
+          severity: "medium",
+          description: "Face enrollment vaqtida liveness tekshiruvi muvaffaqiyatsiz yakunlandi."
+        })
+      });
+      return { success: false, message: "Liveness tekshiruvi muvaffaqiyatsiz tugadi." };
+    }
+
+    const profile = buildBiometricProfile({
+      userId,
+      templateSeed,
+      livenessScore: liveness.score,
+      consentVersion
+    });
+    const duplicateFace = state.biometricProfiles.find(
+      (item) => item.userId !== userId && item.templateHashMock === profile.templateHashMock && item.status === "active"
+    );
+
+    set({
+      biometricProfiles: [
+        profile,
+        ...state.biometricProfiles.filter((item) => item.userId !== userId)
+      ],
+      biometricConsents: [
+        buildBiometricConsent(userId, consentVersion),
+        ...state.biometricConsents.filter((item) => item.userId !== userId)
+      ],
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "FACE_ENROLLMENT",
+        result: duplicateFace ? "duplicate_face_template" : "enrolled"
+      }),
+      identityRiskFlags: duplicateFace
+        ? addRiskFlag(state, {
+            userId,
+            riskType: "duplicate_face_template",
+            severity: "high",
+            description: "Face template boshqa foydalanuvchi bilan mos keldi."
+          })
+        : state.identityRiskFlags,
+      auditLogs: addAudit(state, userId, "ENROLL_FACE_ID", "BiometricProfile", profile.id, "Face ID enrollment completed")
+    });
+
+    return { success: true, message: "Face ID muvaffaqiyatli yoqildi.", entityId: profile.id };
+  },
+  deleteFaceId: (userId, actorId) => {
+    const state = get();
+    const profile = state.biometricProfiles.find((item) => item.userId === userId);
+    if (!profile) {
+      return { success: false, message: "Face ID topilmadi." };
+    }
+    set({
+      biometricProfiles: state.biometricProfiles.map((item) =>
+        item.userId === userId ? { ...item, enabled: false, status: "deleted", templateHashMock: "deleted" } : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "DELETE_FACE_ID",
+        result: "deleted"
+      }),
+      auditLogs: addAudit(state, actorId, "DELETE_FACE_ID", "BiometricProfile", profile.id, "Face ID deleted")
+    });
+    return { success: true, message: "Face ID o'chirildi." };
+  },
+  withdrawBiometricConsent: (userId, actorId) => {
+    const state = get();
+    set({
+      biometricConsents: state.biometricConsents.map((item) =>
+        item.userId === userId
+          ? { ...item, status: "withdrawn", withdrawnAt: new Date().toISOString() }
+          : item
+      ),
+      biometricProfiles: state.biometricProfiles.map((item) =>
+        item.userId === userId ? { ...item, enabled: false, status: "disabled" } : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "WITHDRAW_BIOMETRIC_CONSENT",
+        result: "withdrawn"
+      }),
+      auditLogs: addAudit(state, actorId, "WITHDRAW_BIOMETRIC_CONSENT", "BiometricConsent", userId, biometricConsentText)
+    });
+    return { success: true, message: "Biometrik consent bekor qilindi." };
+  },
+  createPasskey: ({ userId, deviceName }) => {
+    const state = get();
+    if (!state.identitySettings.passkeyEnabled) {
+      return { success: false, message: "Passkey funksiyasi vaqtincha o'chirilgan." };
+    }
+    const credential = createPasskeyCredentialMock(userId, deviceName);
+    set({
+      passkeyCredentials: [credential, ...state.passkeyCredentials.filter((item) => item.userId !== userId)],
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "CREATE_PASSKEY",
+        result: "created",
+        deviceInfo: deviceName
+      }),
+      auditLogs: addAudit(state, userId, "CREATE_PASSKEY", "PasskeyCredential", credential.id, deviceName)
+    });
+    return { success: true, message: "Passkey yaratildi.", entityId: credential.id };
+  },
+  deactivatePasskey: (credentialId, actorId) => {
+    const state = get();
+    const credential = state.passkeyCredentials.find((item) => item.id === credentialId);
+    if (!credential) {
+      return { success: false, message: "Passkey topilmadi." };
+    }
+    set({
+      passkeyCredentials: state.passkeyCredentials.map((item) =>
+        item.id === credentialId ? { ...item, status: "revoked" } : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId: credential.userId,
+        action: "DEACTIVATE_PASSKEY",
+        result: "revoked",
+        deviceInfo: credential.deviceName
+      }),
+      auditLogs: addAudit(state, actorId, "DEACTIVATE_PASSKEY", "PasskeyCredential", credentialId, credential.deviceName)
+    });
+    return { success: true, message: "Passkey o'chirildi." };
+  },
+  regenerateStudentCard: (userId, actorId) => {
+    const state = get();
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) {
+      return { success: false, message: "Foydalanuvchi topilmadi." };
+    }
+    const nextQr = createQrCode(`${user.email}-${Date.now()}`);
+    set({
+      users: state.users.map((item) =>
+        item.id === userId
+          ? {
+              ...item,
+              cardQrCode: nextQr,
+              cardBarcode: createBarcode(`${item.studentId ?? item.email}-${Date.now()}`),
+              cardStatus: "active"
+            }
+          : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "REGENERATE_QR_CARD",
+        result: "regenerated"
+      }),
+      auditLogs: addAudit(state, actorId, "REGENERATE_QR_CARD", "User", userId, "Digital student card regenerated")
+    });
+    return { success: true, message: "Student card QR qayta yaratildi." };
+  },
+  reportLostCard: (userId, actorId) => {
+    const state = get();
+    set({
+      users: state.users.map((item) =>
+        item.id === userId ? { ...item, cardStatus: "reported_lost" } : item
+      ),
+      identityRiskFlags: addRiskFlag(state, {
+        userId,
+        riskType: "card_reported_lost",
+        severity: "medium",
+        description: "Student kartasi yo'qolgan deb belgilandi."
+      }),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "REPORT_LOST_CARD",
+        result: "reported_lost"
+      }),
+      auditLogs: addAudit(state, actorId, "REPORT_LOST_CARD", "User", userId, "Student card reported lost")
+    });
+    return { success: true, message: "Student card yo'qolgan deb belgilandi." };
+  },
+  verifyStudentIdentity: ({ actorId, userId, identifier, purpose }) => {
+    const state = get();
+    const user = state.users.find((item) => item.id === userId);
+    if (!user) {
+      return { success: false, message: "Foydalanuvchi topilmadi.", result: "not_matched", confidence: "low" };
+    }
+    const profile = state.biometricProfiles.find((item) => item.userId === userId && item.enabled && item.status === "active");
+    if (!profile) {
+      set({
+        biometricAuditLogs: addBiometricAudit(state, {
+          userId,
+          action: "VERIFY_IDENTITY",
+          result: "no_biometric"
+        }),
+        identityVerificationRecords: addIdentityVerification(state, {
+          userId,
+          actorId,
+          method: "face_id",
+          result: "no_biometric",
+          confidence: "low",
+          purpose,
+          details: "No biometric enrolled"
+        })
+      });
+      return { success: false, message: "No biometric enrolled. Manual verification fallback tavsiya etiladi.", result: "no_biometric", confidence: "low" };
+    }
+
+    const liveness = evaluateLivenessMock(identifier, livenessSteps.length);
+    if (!liveness.success || liveness.score < state.identitySettings.livenessThreshold) {
+      set({
+        biometricAuditLogs: addBiometricAudit(state, {
+          userId,
+          action: "VERIFY_IDENTITY",
+          result: "liveness_failed"
+        }),
+        identityVerificationRecords: addIdentityVerification(state, {
+          userId,
+          actorId,
+          method: "face_id",
+          result: "liveness_failed",
+          confidence: "low",
+          purpose,
+          details: "Liveness failed during staff verification"
+        })
+      });
+      return { success: false, message: "Liveness failed.", result: "liveness_failed", confidence: "low" };
+    }
+
+    const comparison = compareFaceTemplateHashMock(profile.templateHashMock, getTemplateSeed(user));
+    const result = comparison.matched ? "matched" : "not_matched";
+    const confidence = comparison.matched ? "high" : "low";
+    set({
+      biometricProfiles: state.biometricProfiles.map((item) =>
+        item.userId === userId ? { ...item, lastVerifiedAt: new Date().toISOString() } : item
+      ),
+      biometricAuditLogs: addBiometricAudit(state, {
+        userId,
+        action: "VERIFY_IDENTITY",
+        result
+      }),
+      identityVerificationRecords: addIdentityVerification(state, {
+        userId,
+        actorId,
+        method: "face_id",
+        result,
+        confidence,
+        purpose,
+        details: comparison.matched ? "Student identity matched" : "Student identity did not match"
+      }),
+      auditLogs: addAudit(state, actorId, "VERIFY_STUDENT_IDENTITY", "User", userId, `${purpose}: ${result}`)
+    });
+    return {
+      success: comparison.matched,
+      message: comparison.matched ? "Student identity matched." : "Student identity not matched.",
+      result,
+      confidence
+    };
+  },
+  logIdentityVerification: (payload) =>
+    set((state) => ({
+      identityVerificationRecords: addIdentityVerification(state, payload),
+      biometricAuditLogs:
+        payload.userId
+          ? addBiometricAudit(state, {
+              userId: payload.userId,
+              action: `IDENTITY_${payload.method.toUpperCase()}`,
+              result: payload.result
+            })
+          : state.biometricAuditLogs
+    })),
+  updateIdentitySettings: (payload, actorId) => {
+    const state = get();
+    set({
+      identitySettings: {
+        ...state.identitySettings,
+        ...payload
+      },
+      auditLogs: addAudit(state, actorId, "UPDATE_IDENTITY_SETTINGS", "IdentitySettings", "identity-settings", JSON.stringify(payload))
+    });
+    return { success: true, message: "Identity security settings yangilandi." };
+  },
   logAIUsage: (payload) =>
     set((state) => ({
       aiUsageLogs: addAIUsage(state, payload)

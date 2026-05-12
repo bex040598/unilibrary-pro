@@ -43,12 +43,39 @@ export type PaymentMethod = "Click" | "Payme" | "Uzum Pay" | "Bank transfer" | "
 export type SeatStatus = "available" | "booked" | "occupied" | "disabled";
 export type BookingStatus = "booked" | "checked_in" | "cancelled" | "no_show";
 export type AccessLevel = "public" | "university only" | "faculty only" | "staff only" | "restricted";
+export type RepositoryAccessRequestStatus = "pending" | "approved" | "rejected";
 export type AcquisitionStatus = "requested" | "approved" | "ordered" | "received" | "rejected";
 export type NotificationType = "reservation" | "loan" | "fine" | "repository" | "room" | "system";
 export type RecordStatus = "draft" | "published";
 export type ReadingPlanLevel = "beginner" | "intermediate" | "advanced";
 export type ReadingPlanStatus = "active" | "completed" | "archived";
 export type FlashcardStatus = "new" | "learning" | "learned";
+export type BiometricProfileStatus = "active" | "disabled" | "deleted";
+export type BiometricConsentStatus = "granted" | "withdrawn";
+export type PasskeyStatus = "active" | "revoked";
+export type IdentityRiskSeverity = "low" | "medium" | "high";
+export type IdentityRiskStatus = "open" | "reviewed";
+export type IdentityRiskType =
+  | "duplicate_student_id"
+  | "duplicate_face_template"
+  | "suspicious_login"
+  | "repeated_liveness_failure"
+  | "card_reported_lost"
+  | "restricted_access_attempt";
+export type IdentityVerificationMethod =
+  | "face_id"
+  | "qr_card"
+  | "passkey"
+  | "email_password"
+  | "manual"
+  | "repository_access";
+export type IdentityVerificationResult =
+  | "matched"
+  | "not_matched"
+  | "liveness_failed"
+  | "no_biometric"
+  | "verified"
+  | "pending";
 
 export interface User {
   id: string;
@@ -65,6 +92,9 @@ export interface User {
   status: UserStatus;
   membershipNumber: string;
   cardQrCode: string;
+  cardBarcode: string;
+  cardStatus: "active" | "reported_lost";
+  cardExpiryDate: string;
   createdAt: string;
 }
 
@@ -181,6 +211,19 @@ export interface DigitalResource {
   downloads: number;
   uploadedBy: string;
   createdAt: string;
+}
+
+export interface RepositoryAccessRequest {
+  id: string;
+  resourceId: string;
+  userId?: string;
+  requesterName: string;
+  requesterEmail: string;
+  reason: string;
+  status: RepositoryAccessRequestStatus;
+  createdAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
 }
 
 export interface Loan {
@@ -375,6 +418,84 @@ export interface AIUsageLog {
   createdAt: string;
 }
 
+export interface BiometricProfile {
+  id: string;
+  userId: string;
+  enabled: boolean;
+  templateHashMock: string;
+  livenessScore: number;
+  enrolledAt: string;
+  lastVerifiedAt?: string;
+  consentVersion: string;
+  status: BiometricProfileStatus;
+}
+
+export interface BiometricConsent {
+  id: string;
+  userId: string;
+  purpose: string;
+  consentText: string;
+  grantedAt?: string;
+  withdrawnAt?: string;
+  status: BiometricConsentStatus;
+}
+
+export interface BiometricAuditLog {
+  id: string;
+  userId: string;
+  action: string;
+  result: string;
+  deviceInfo: string;
+  ipAddressMock: string;
+  createdAt: string;
+}
+
+export interface PasskeyCredential {
+  id: string;
+  userId: string;
+  credentialId: string;
+  publicKeyMock: string;
+  deviceName: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  status: PasskeyStatus;
+}
+
+export interface IdentityRiskFlag {
+  id: string;
+  userId: string;
+  riskType: IdentityRiskType;
+  severity: IdentityRiskSeverity;
+  description: string;
+  status: IdentityRiskStatus;
+  createdAt: string;
+  reviewedBy?: string;
+}
+
+export interface IdentityVerificationRecord {
+  id: string;
+  userId?: string;
+  actorId?: string;
+  method: IdentityVerificationMethod;
+  result: IdentityVerificationResult;
+  confidence: AIConfidence;
+  purpose: string;
+  details: string;
+  createdAt: string;
+}
+
+export interface IdentitySettings {
+  faceIdLoginEnabled: boolean;
+  faceIdCirculationVerificationEnabled: boolean;
+  qrCardLoginEnabled: boolean;
+  passkeyEnabled: boolean;
+  requireLivenessCheck: boolean;
+  livenessThreshold: number;
+  maxFailedAttempts: number;
+  biometricRetentionDays: number;
+  manualFallbackEnabled: boolean;
+}
+
 export interface LibraryDatabase {
   users: User[];
   branches: LibraryBranch[];
@@ -383,6 +504,7 @@ export interface LibraryDatabase {
   records: BibliographicRecord[];
   copies: BookCopy[];
   digitalResources: DigitalResource[];
+  resourceAccessRequests: RepositoryAccessRequest[];
   loans: Loan[];
   reservations: Reservation[];
   fines: Fine[];
@@ -398,6 +520,13 @@ export interface LibraryDatabase {
   flashcards: Flashcard[];
   bibliographyItems: BibliographyItem[];
   aiUsageLogs: AIUsageLog[];
+  biometricProfiles: BiometricProfile[];
+  biometricConsents: BiometricConsent[];
+  biometricAuditLogs: BiometricAuditLog[];
+  passkeyCredentials: PasskeyCredential[];
+  identityRiskFlags: IdentityRiskFlag[];
+  identityVerificationRecords: IdentityVerificationRecord[];
+  identitySettings: IdentitySettings;
 }
 
 export interface DemoAccount {
