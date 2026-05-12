@@ -1,14 +1,14 @@
 services:
   - type: web
-    name: unilibrary-platformasi-bex040598
-    repo: https://github.com/bex040598/unilibrary-pro
+    name: unilibrary-pro-2
     branch: main
     runtime: node
     plan: free
     region: oregon
     buildCommand: npm install && npm run build
-    startCommand: npm start -- --hostname 0.0.0.0 --port $PORT
-    autoDeploy: true
+    startCommand: npx next start --hostname 0.0.0.0 --port $PORT
+    autoDeployTrigger: commit
+    healthCheckPath: /
     envVars:
       - key: NODE_ENV
         value: production
